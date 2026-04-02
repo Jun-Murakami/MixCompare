@@ -1,6 +1,7 @@
 #include "PlaylistManager.h"
 #include "StateManager.h"
 #include "ErrorManager.h"
+#include "../audio/MonkeyAudioFormat.h"
 
 namespace MixCompare
 {
@@ -9,8 +10,9 @@ PlaylistManager::PlaylistManager(StateManager* sm)
     : stateManager(sm)
 {
     jassert(stateManager != nullptr);
-    
+
     formatManager.registerBasicFormats();
+    formatManager.registerFormat(new mc3::MonkeyAudioFormat(), false);
 
 #if JUCE_WINDOWS
     // Windows用のMedia Foundation AACフォーマットを追加
