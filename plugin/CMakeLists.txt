@@ -78,6 +78,8 @@ target_sources(MixCompare PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/PluginProcessor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MediaFoundationAACFormat.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MediaFoundationAACFormat.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MonkeyAudioFormat.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MonkeyAudioFormat.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/InMemoryPlaybackSource.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/InMemoryPlaybackSource.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MomentaryProcessor.cpp
@@ -144,6 +146,7 @@ target_link_libraries(MixCompare
         juce::juce_graphics
         juce::juce_gui_basics
         juce::juce_gui_extra                 # WebView に必要
+        MACLib                               # Monkey's Audio SDK（APE デコーダー）
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

@@ -50,6 +50,25 @@ function Write-Error {
 # Start build process
 Write-Header "MixCompare $Version Build Script"
 
+# Load .env file if present (KEY=VALUE format, one per line)
+$EnvFilePath = "$RootDir\.env"
+if (Test-Path $EnvFilePath) {
+    Write-Host "Loading environment variables from .env ..." -ForegroundColor Gray
+    Get-Content $EnvFilePath | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#")) {
+            $eqIdx = $line.IndexOf("=")
+            if ($eqIdx -gt 0) {
+                $key   = $line.Substring(0, $eqIdx).Trim()
+                $value = $line.Substring($eqIdx + 1).Trim().Trim('"').Trim("'")
+                if (-not (Get-Item "env:$key" -ErrorAction SilentlyContinue)) {
+                    [Environment]::SetEnvironmentVariable($key, $value, "Process")
+                }
+            }
+        }
+    }
+}
+
 # Get build date
 $BuildDate = Get-Date -Format "yyyy-MM-dd"
 

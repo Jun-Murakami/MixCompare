@@ -93,6 +93,24 @@ fi
 VERSION="$(cat "${VERSION_FILE}" | tr -d '\r' | tr -d '\n')"
 BUILD_DATE="$(date +%Y-%m-%d)"
 
+# Load .env file if present (KEY=VALUE format, one per line)
+ENV_FILE="${ROOT_DIR}/.env"
+if [[ -f "${ENV_FILE}" ]]; then
+    echo -e "${color_gray}Loading environment variables from .env ...${color_reset}"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line## }"          # trim leading
+        line="${line%% }"          # trim trailing
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        value="${value#\"}" ; value="${value%\"}"   # strip surrounding quotes
+        value="${value#\'}" ; value="${value%\'}"
+        if [[ -z "${(P)key:-}" ]]; then
+            export "$key=$value"
+        fi
+    done < "${ENV_FILE}"
+fi
+
 echo_header "MixCompare ${VERSION} Build Script (macOS zsh)"
 
 # ディレクトリ設定

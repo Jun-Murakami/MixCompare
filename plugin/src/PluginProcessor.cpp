@@ -1,10 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <cmath> // std::abs for TruePeak accumulation
-#include <algorithm> // std::min, std::max for loop range calculation
-#include <future> // std::async, std::future for timeout-based thread join
-#include <thread> // std::thread
-#include <chrono> // std::chrono for timeout
 #include "ParameterIDs.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "core/StateManager.h"
@@ -17,6 +13,7 @@
 #include "util/CrashHandler.h"
 #include "audio/StreamingPlaybackSource.h"
 #include "audio/InMemoryPlaybackSource.h"
+#include "audio/MonkeyAudioFormat.h"
 #if JUCE_WINDOWS
 #include "audio/MediaFoundationAACFormat.h"
 #endif
@@ -119,43 +116,9 @@ MixCompare3AudioProcessor::~MixCompare3AudioProcessor()
 {
     // タイマーを停止
     stopTimer();
-
-    // デストラクタで join() を呼ぶ前に、確実にロード中止フラグを立てる
+    cancelBackgroundLoadThread();
     isLoadingSource.store(false, std::memory_order_release);
-    cancelBackgroundLoad.store(true, std::memory_order_release);
-
-    // AAX/Pro Tools対策: バックグラウンドスレッドが join で永久ブロックしないよう
-    // タイムアウト付きで待機し、それでも終わらない場合はdetachする
-    {
-        std::thread toJoin;
-        {
-            std::lock_guard<std::mutex> lock(backgroundLoadMutex);
-            if (backgroundLoadThread.joinable())
-                toJoin = std::move(backgroundLoadThread);
-        }
-
-        if (toJoin.joinable())
-        {
-            // 最大500msだけ待つ
-            auto future = std::async(std::launch::async, [&toJoin]() {
-                toJoin.join();
-            });
-
-            if (future.wait_for(std::chrono::milliseconds(500)) == std::future_status::timeout)
-            {
-                // タイムアウト: detachして解放（推奨されないが、Pro Tools終了をブロックするよりマシ）
-                toJoin.detach();
-            }
-        }
-    }
-
-    // AudioEngine を先に解放（IPlaybackSource の停止とリソース解放）
-    if (audioEngine)
-    {
-        audioEngine->setPlaybackSource(nullptr);
-        audioEngine->releaseResources();
-    }
-
+    
     // パラメータリスナーを先に削除（parametersはメンバー変数なので最後まで有効）
     parameters.removeParameterListener(mc3::id::HOST_GAIN.getParamID(), this);
     parameters.removeParameterListener(mc3::id::PLAYLIST_GAIN.getParamID(), this);
@@ -176,6 +139,12 @@ MixCompare3AudioProcessor::~MixCompare3AudioProcessor()
         stateManager->removeListener(this);
     if (transportManager)
         transportManager->removeListener(this);
+
+    {
+        const std::lock_guard<std::mutex> fmGuard(backgroundFormatManagerMutex);
+        // Media Foundation フォーマットはここで明示的に破棄し、DLL 解放時の MFShutdown 呼び出しを避ける。
+        backgroundFormatManager.clearFormats();
+    }
     
     // managersを明示的に破棄して順序を制御
     meteringService.reset();
@@ -1676,6 +1645,20 @@ void MixCompare3AudioProcessor::cancelBackgroundLoadThread()
     cancelBackgroundLoad.store(false, std::memory_order_release);
 }
 
+void MixCompare3AudioProcessor::initialiseBackgroundFormatManager()
+{
+    std::call_once(backgroundFormatManagerInitFlag, [this]()
+    {
+        // フォーマット登録をプロセッサ寿命内に限定して、グローバル static の破棄を回避する。
+        backgroundFormatManager.registerBasicFormats();
+        backgroundFormatManager.registerFormat(new mc3::MonkeyAudioFormat(), false);
+#if JUCE_WINDOWS
+        if (mc3::MediaFoundationAACFormat::isMediaFoundationAvailable())
+            backgroundFormatManager.registerFormat(new mc3::MediaFoundationAACFormat(), false);
+#endif
+    });
+}
+
 void MixCompare3AudioProcessor::runBackgroundLoad(uint64_t epoch)
 {
     if (cancelBackgroundLoad.load(std::memory_order_acquire))
@@ -1691,19 +1674,11 @@ void MixCompare3AudioProcessor::runBackgroundLoad(uint64_t epoch)
         auto* item = playlistManager->getCurrentItem();
         fileToOpen = item->file;
         
-        // すべてストリーミング再生に統一
-        static juce::AudioFormatManager fm; static std::atomic<bool> fmInit{false};
-        if (!fmInit.exchange(true)) {
-
-            fm.registerBasicFormats();
-            
-#if JUCE_WINDOWS
-            if (mc3::MediaFoundationAACFormat::isMediaFoundationAvailable()) {
-                fm.registerFormat(new mc3::MediaFoundationAACFormat(), false);
-            }
-#endif
+        initialiseBackgroundFormatManager();
+        {
+            const std::lock_guard<std::mutex> guard(backgroundFormatManagerMutex);
+            prebuiltReader.reset(backgroundFormatManager.createReaderFor(fileToOpen));
         }
-        prebuiltReader.reset(fm.createReaderFor(fileToOpen));
         if (prebuiltReader)
         {
             const juce::String ext = fileToOpen.getFileExtension().toLowerCase();

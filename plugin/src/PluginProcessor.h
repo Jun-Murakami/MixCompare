@@ -209,6 +209,7 @@ private:
     void applyLoadedSource(bool loaded,
                            uint64_t epoch,
                            std::shared_ptr<MixCompare::IPlaybackSource> preparedSource);
+    void initialiseBackgroundFormatManager();
     
     // Refactored managers
     std::unique_ptr<MixCompare::StateManager> stateManager;
@@ -245,6 +246,9 @@ private:
     std::mutex backgroundLoadMutex;
     std::thread backgroundLoadThread;
     std::atomic<bool> cancelBackgroundLoad{false};
+    juce::AudioFormatManager backgroundFormatManager;
+    std::once_flag backgroundFormatManagerInitFlag;
+    std::mutex backgroundFormatManagerMutex;
 
     // HOST_SYNC_CAPABLE のランタイム自動判定（-1=未要求, 0/1=要求値）
     std::atomic<int> pendingHostSyncCapable{-1};

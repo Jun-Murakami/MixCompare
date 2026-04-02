@@ -112,6 +112,34 @@ export const LicenseDialog: React.FC<LicenseDialogProps> = ({ open, onClose }) =
 
         <Divider sx={{ my: 0.5 }} />
 
+        {/* Core SDK / Libraries */}
+        <Typography variant='subtitle2' sx={{ fontWeight: 600, fontSize: '0.80rem' }}>
+          Core Libraries
+        </Typography>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, pl: 1, mb: 0.5 }}>
+          {[
+            { name: 'JUCE', license: 'AGPLv3 / Commercial', url: 'https://juce.com/' },
+            { name: 'VST3 SDK', license: 'MIT', url: 'https://github.com/steinbergmedia/vst3sdk' },
+            { name: 'AAX SDK', license: 'GPLv3 / Commercial (Avid)', url: 'https://developer.avid.com/aax' },
+            { name: "Monkey's Audio SDK", license: 'BSD 3-Clause', url: 'https://www.monkeysaudio.com/' },
+          ].map((lib) => (
+            <Box key={lib.name} sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75, fontSize: '0.75rem' }}>
+              <MuiLink
+                href={lib.url}
+                onClick={(e) => handleLinkClick(e, lib.url)}
+                sx={{ cursor: 'pointer', fontWeight: 600, fontSize: '0.75rem', minWidth: 130 }}
+              >
+                {lib.name}
+              </MuiLink>
+              <Typography variant='caption' color='text.secondary' sx={{ fontSize: '0.70rem' }}>
+                {lib.license}
+              </Typography>
+            </Box>
+          ))}
+        </Box>
+
+        <Divider sx={{ my: 0.5 }} />
+
         {/* テーブル見出し（固定） */}
         <Typography variant='subtitle2' sx={{ fontWeight: 600, fontSize: '0.80rem' }}>
           Frontend Dependencies

@@ -77,6 +77,9 @@ else()
     set(BUILD_AAX OFF)
 endif()
 
+# Monkey's Audio SDK（APE デコーダー）
+add_subdirectory(plugin/lib/mac_sdk)
+
 # 共有設定: 子ディレクトリへ渡すソースルート（plugin 配下へ集約）
 set(MIXCOMPARE_SRC_DIR "${CMAKE_SOURCE_DIR}/plugin/src")
 

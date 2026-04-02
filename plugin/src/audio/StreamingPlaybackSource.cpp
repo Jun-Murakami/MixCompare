@@ -45,26 +45,7 @@ StreamingPlaybackSource::StreamingPlaybackSource(std::unique_ptr<juce::AudioForm
 
 StreamingPlaybackSource::~StreamingPlaybackSource()
 {
-    // AAX/Pro Tools対策: 確実にリソースを解放
-    if (transport)
-    {
-        transport->stop();
-        transport->releaseResources();
-        transport->setSource(nullptr);
-    }
-
-    readerSource.reset();
-    transport.reset();
-
-    // TimeSliceThread を確実に停止（タイムアウト後は強制終了）
-    if (readAheadThread)
-    {
-        readAheadThread->stopThread(2000);  // 2秒待つ
-        readAheadThread.reset();
-    }
-
-    // AudioFormatReader（ファイルハンドル）を明示的に解放
-    reader.reset();
+    release();
 }
 
 void StreamingPlaybackSource::prepare(double sampleRate, int blockSize)
