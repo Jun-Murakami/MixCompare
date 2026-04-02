@@ -61,14 +61,34 @@ set(MAC_LIB_SOURCES
 )
 
 # アーキテクチャ別 SIMD フィルタ
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i[3-6]86")
+# Universal Binary (macOS) で複数アーキテクチャを含む場合は両方のファイルを追加する。
+# CMAKE_SYSTEM_PROCESSOR はホスト CPU を返すため、クロスコンパイル時に不正確になる。
+set(_include_x86_simd OFF)
+set(_include_arm_simd OFF)
+
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    foreach(_arch IN LISTS CMAKE_OSX_ARCHITECTURES)
+        if(_arch MATCHES "x86_64")
+            set(_include_x86_simd ON)
+        elseif(_arch MATCHES "arm64")
+            set(_include_arm_simd ON)
+        endif()
+    endforeach()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i[3-6]86")
+    set(_include_x86_simd ON)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    set(_include_arm_simd ON)
+endif()
+
+if(_include_x86_simd)
     list(APPEND MAC_LIB_SOURCES
         ${MAC_SDK_DIR}/MACLib/NNFilterSSE2.cpp
         ${MAC_SDK_DIR}/MACLib/NNFilterSSE4.1.cpp
         ${MAC_SDK_DIR}/MACLib/NNFilterAVX2.cpp
         ${MAC_SDK_DIR}/MACLib/NNFilterAVX512.cpp
     )
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+endif()
+if(_include_arm_simd)
     list(APPEND MAC_LIB_SOURCES
         ${MAC_SDK_DIR}/MACLib/NNFilterNeon.cpp
     )
@@ -115,14 +135,28 @@ else()
         -w  # SDK 内部の警告を全て抑制
     )
     # SIMD コンパイルフラグ（GCC/Clang）
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i[3-6]86")
-        set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterSSE2.cpp
-            PROPERTIES COMPILE_FLAGS "-msse2")
-        set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterSSE4.1.cpp
-            PROPERTIES COMPILE_FLAGS "-msse4.1")
-        set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterAVX2.cpp
-            PROPERTIES COMPILE_FLAGS "-mavx2")
-        set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterAVX512.cpp
-            PROPERTIES COMPILE_FLAGS "-mavx512dq -mavx512bw")
+    if(_include_x86_simd)
+        if(APPLE AND _include_arm_simd)
+            # Universal Binary: -Xarch_x86_64 で x86_64 ビルドにのみ SIMD フラグを渡す
+            # arm64 ビルド時はフラグがスキップされ、ソース内の #ifdef ガードにより空実装になる
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterSSE2.cpp
+                PROPERTIES COMPILE_FLAGS "-Xarch_x86_64 -msse2")
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterSSE4.1.cpp
+                PROPERTIES COMPILE_FLAGS "-Xarch_x86_64 -msse4.1")
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterAVX2.cpp
+                PROPERTIES COMPILE_FLAGS "-Xarch_x86_64 -mavx2")
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterAVX512.cpp
+                PROPERTIES COMPILE_FLAGS "-Xarch_x86_64 -mavx512dq -Xarch_x86_64 -mavx512bw")
+        else()
+            # 単一アーキテクチャ（x86_64 のみ）または非 Apple
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterSSE2.cpp
+                PROPERTIES COMPILE_FLAGS "-msse2")
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterSSE4.1.cpp
+                PROPERTIES COMPILE_FLAGS "-msse4.1")
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterAVX2.cpp
+                PROPERTIES COMPILE_FLAGS "-mavx2")
+            set_source_files_properties(${MAC_SDK_DIR}/MACLib/NNFilterAVX512.cpp
+                PROPERTIES COMPILE_FLAGS "-mavx512dq -mavx512bw")
+        endif()
     endif()
 endif()
