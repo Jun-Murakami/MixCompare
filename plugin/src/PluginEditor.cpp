@@ -1151,7 +1151,7 @@ void MixCompare3AudioProcessorEditor::handlePlaylistAction(
     {
         // ファイル選択ダイアログ（非同期版使用）- 英語タイトル、複数選択対応
         // Media Foundation経由でWindowsでもM4A/AACをサポート
-        juce::String supportedFormats = "*.wav;*.aif;*.aiff;*.mp3;*.flac;*.ogg;*.m4a;*.aac";
+        juce::String supportedFormats = "*.wav;*.aif;*.aiff;*.mp3;*.flac;*.ogg;*.m4a;*.aac;*.ape";
         
         auto fileChooser = std::make_shared<juce::FileChooser>("Select Audio Files", 
                                                                juce::File{}, 
