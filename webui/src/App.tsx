@@ -17,6 +17,19 @@ import './App.css';
 
 const isWebMode = import.meta.env.VITE_RUNTIME === 'web';
 
+function extractDroppedFiles(dataTransfer: DataTransfer): File[] {
+  const filesFromItems = Array.from(dataTransfer.items ?? [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+
+  if (filesFromItems.length > 0) {
+    return filesFromItems;
+  }
+
+  return Array.from(dataTransfer.files ?? []);
+}
+
 function App() {
   // JUCEイベントリスナーを初期化
   useHostShortcutForwarding();
@@ -38,8 +51,9 @@ function App() {
   const handleDrop = useCallback((e: React.DragEvent) => {
     if (!isWebMode) return;
     e.preventDefault();
+    e.stopPropagation();
     setIsDragOver(false);
-    const files = e.dataTransfer.files;
+    const files = extractDroppedFiles(e.dataTransfer);
     if (files.length > 0) {
       juceBridge.callNative('playlist_action', 'add_files', files);
     }

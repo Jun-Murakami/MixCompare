@@ -8,6 +8,19 @@ import { getSliderState, getToggleState } from './juce-shim';
 
 type EventCallback = (data: unknown) => void;
 
+function snapshotFiles(files: FileList | File[] | null | undefined): File[] {
+  return Array.from(files ?? []).filter((file): file is File => file instanceof File);
+}
+
+async function importFiles(files: File[]): Promise<void> {
+  if (files.length === 0) {
+    return;
+  }
+
+  await webAudioEngine.ensureAudioContext();
+  await webAudioEngine.addFiles(files);
+}
+
 class WebBridgeManager {
   private initialized = false;
   private initCallbacks: Array<() => void> = [];
@@ -71,28 +84,60 @@ class WebBridgeManager {
 
     switch (action) {
       case 'add': {
-        // ファイルピッカーを開いてデコード
         const input = document.createElement('input');
         input.type = 'file';
         input.multiple = true;
         input.accept = 'audio/*,.wav,.flac,.mp3,.m4a,.aac,.ogg';
+
+        // Safari では DOM 未接続 input の file picker が不安定なことがあるため body に一時接続する。
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        input.style.width = '1px';
+        input.style.height = '1px';
+        input.style.opacity = '0';
+        input.style.pointerEvents = 'none';
+        document.body.appendChild(input);
+
         return new Promise<void>((resolve) => {
-          input.onchange = async () => {
-            if (input.files && input.files.length > 0) {
-              await webAudioEngine.ensureAudioContext();
-              await webAudioEngine.addFiles(input.files);
+          let settled = false;
+
+          const cleanup = () => {
+            input.removeEventListener('change', handleChange);
+            input.removeEventListener('cancel', handleCancel);
+            input.remove();
+          };
+
+          const finish = () => {
+            if (settled) {
+              return;
             }
+            settled = true;
+            cleanup();
             resolve();
           };
-          input.oncancel = () => resolve();
+
+          const handleChange = async () => {
+            const files = snapshotFiles(input.files);
+
+            try {
+              await importFiles(files);
+            } finally {
+              finish();
+            }
+          };
+
+          const handleCancel = () => {
+            finish();
+          };
+
+          input.addEventListener('change', handleChange, { once: true });
+          input.addEventListener('cancel', handleCancel, { once: true });
           input.click();
         });
       }
       case 'add_files': {
-        // ドラッグ&ドロップ等で直接 FileList を受け取る
-        const files = args[1] as FileList | File[];
-        await webAudioEngine.ensureAudioContext();
-        await webAudioEngine.addFiles(files);
+        const files = snapshotFiles(args[1] as FileList | File[]);
+        await importFiles(files);
         return null;
       }
       case 'remove': {

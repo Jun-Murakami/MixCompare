@@ -142,9 +142,9 @@ export class WebAudioEngine {
 
   // ====== ファイル読み込み ======
 
-  async addFiles(files: FileList | File[]): Promise<void> {
+  async addFiles(files: readonly File[]): Promise<void> {
     if (!this.audioContext) return;
-    for (const file of Array.from(files)) {
+    for (const file of files) {
       try {
         const ab = await file.arrayBuffer();
         const audioBuf = await this.audioContext.decodeAudioData(ab);
