@@ -6,6 +6,8 @@ import {
   statSync,
   cpSync,
   existsSync,
+  renameSync,
+  unlinkSync,
 } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve as resolvePath } from 'path';
@@ -35,12 +37,18 @@ const packageJson = JSON.parse(
  */
 function mergePublicWeb(): Plugin {
   const webPublicDir = resolvePath(__dirname, 'public-web');
-
   return {
     name: 'merge-public-web',
 
-    // Dev server: public-web/ からも静的ファイルを配信
+    // Dev server: index.web.html を使い、public-web/ からも静的ファイルを配信
     configureServer(server) {
+      // index.html リクエストを index.web.html に差し替え
+      server.middlewares.use((req, _res, next) => {
+        if (req.url === '/' || req.url === '/index.html') {
+          req.url = '/index.web.html';
+        }
+        next();
+      });
       server.middlewares.use((req, res, next) => {
         if (!req.url) return next();
 
@@ -71,11 +79,18 @@ function mergePublicWeb(): Plugin {
       });
     },
 
-    // Build: public-web/ の中身を dist/ にコピー
+    // Build: public-web/ コピー + index.web.html → index.html リネーム
     closeBundle() {
+      const outDir = resolvePath(__dirname, 'dist');
       if (existsSync(webPublicDir)) {
-        const outDir = resolvePath(__dirname, 'dist');
         cpSync(webPublicDir, outDir, { recursive: true, force: true });
+      }
+      // index.web.html → index.html にリネーム（デプロイ用）
+      const webHtml = resolvePath(outDir, 'index.web.html');
+      const indexHtml = resolvePath(outDir, 'index.html');
+      if (existsSync(webHtml)) {
+        if (existsSync(indexHtml)) unlinkSync(indexHtml);
+        renameSync(webHtml, indexHtml);
       }
     },
   };
@@ -123,5 +138,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      input: resolvePath(__dirname, 'index.web.html'),
+    },
   },
 });
