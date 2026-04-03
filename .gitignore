@@ -25,6 +25,16 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Emscripten SDK
+/emsdk/
+
+# WASM build
+/wasm/build/
+
+# Web-only assets (generated)
+/webui/public-web/wasm/
+/webui/public-web/audio/
+
 # Build artifacts
 *.dll
 *.exe

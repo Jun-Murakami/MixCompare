@@ -63,6 +63,9 @@ const buildPayload = (event: KeyboardEvent, type: ForwardKeyEventPayload['type']
 
 export const useHostShortcutForwarding = () => {
   useEffect(() => {
+    // Web (SPA) モードではホスト転送は不要（ブラウザのキー操作を阻害するため）
+    if (import.meta.env.VITE_RUNTIME === 'web') return;
+
     let bridgeReady = false;
     juceBridge.whenReady(() => {
       bridgeReady = true;

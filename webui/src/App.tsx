@@ -1,7 +1,7 @@
 import { ThemeProvider } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import { Box, Paper, Typography, Button, Menu, MenuItem } from '@mui/material';
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { juceBridge } from './bridge/juce';
 import { darkTheme } from './theme';
 import { SourceSelector } from './components/SourceSelector';
@@ -15,10 +15,35 @@ import { showErrorDialog, showWarningDialog, showInfoDialog } from './store/dial
 import LicenseDialog from './components/LicenseDialog';
 import './App.css';
 
+const isWebMode = import.meta.env.VITE_RUNTIME === 'web';
+
 function App() {
   // JUCEイベントリスナーを初期化
   useHostShortcutForwarding();
   const dragState = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+
+  // Web 版: ドラッグ&ドロップでファイル追加
+  const [isDragOver, setIsDragOver] = useState(false);
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!isWebMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  }, []);
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!isWebMode) return;
+    e.preventDefault();
+    setIsDragOver(false);
+  }, []);
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    if (!isWebMode) return;
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      juceBridge.callNative('playlist_action', 'add_files', files);
+    }
+  }, []);
 
   // 開発用：エラーテストメニュー
   const [errorMenuAnchor, setErrorMenuAnchor] = useState<null | HTMLElement>(null);
@@ -178,7 +203,25 @@ function App() {
           caret-color: auto;
         }
       `}</style>
-      <Box sx={{ flexGrow: 1, height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', p: 2, pt: 0 }}>
+      <Box sx={isWebMode ? { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', py: 4 } : undefined}>
+      <Box
+        sx={{
+          flexGrow: isWebMode ? 0 : 1,
+          height: isWebMode ? 800 : '100vh',
+          width: isWebMode ? '100%' : undefined,
+          maxWidth: isWebMode ? 500 : undefined,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          p: 2,
+          pt: 0,
+          ...(isWebMode ? { borderRadius: 2, boxShadow: 8 } : {}),
+          ...(isDragOver ? { outline: '2px dashed', outlineColor: 'primary.main', outlineOffset: -4 } : {}),
+        }}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1, py: 0.5 }}>
           <Typography
             variant='body2'
@@ -227,15 +270,27 @@ function App() {
             <Controls />
           </Box>
         </Box>
-        {/* 右下リサイズハンドル。WebView前面で操作できる */}
-        <div
-          id='resizeHandle'
-          onPointerDown={onDragStart}
-          onPointerMove={onDrag}
-          onPointerUp={onDragEnd}
-          style={handleStyle}
-          title='Resize'
-        />
+        {/* 右下リサイズハンドル。WebView前面で操作できる（Web版では非表示） */}
+        {!isWebMode && (
+          <div
+            id='resizeHandle'
+            onPointerDown={onDragStart}
+            onPointerMove={onDrag}
+            onPointerUp={onDragEnd}
+            style={handleStyle}
+            title='Resize'
+          />
+        )}
+      </Box>
+
+      {/* Web 版: コンテナ下の説明文 */}
+      {isWebMode && (
+        <Typography variant='caption' color='text.secondary' sx={{ mt: 3, textAlign: 'center', maxWidth: 500, lineHeight: 1.8 }}>
+          You can switch between and compare the playback audio from the HOST (DAW) and the playlist.
+          <br />
+          HOST（DAW）の再生音と、プレイリストの再生音を切り替えて比較することができます。
+        </Typography>
+      )}
       </Box>
 
       {/* 開発用：エラーテストボタン（ホバーで表示） */}

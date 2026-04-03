@@ -195,6 +195,138 @@ MixCompare/
 - **Vite**: Fast build tool and dev server
 - **DnD Kit**: Drag-and-drop functionality
 
+## Web Demo (WASM Experiment)
+
+This repository includes an experimental **Web SPA version** of MixCompare that runs entirely in the browser using WebAssembly. The plugin's C++ DSP code is compiled to WASM via Emscripten, and the existing React UI is reused with minimal changes through Vite alias swapping.
+
+### Why?
+
+- **Plugin demo site**: Let users try the plugin's core functionality directly in the browser without installing anything
+- **Beyond Web Audio API**: The WASM DSP runs custom C++ algorithms (TPT state-variable filter, ITU-R BS.1770-4 LKFS metering) that aren't available as native Web Audio nodes
+- **Code reuse**: The same React/MUI/TypeScript frontend serves both the JUCE WebView plugin and the standalone web app
+
+### Architecture
+
+```
+┌─ Browser ──────────────────────────────────────────────────┐
+│                                                            │
+│  Main Thread                  Audio Thread (AudioWorklet)  │
+│  ┌─────────────┐             ┌──────────────────────┐      │
+│  │ React UI    │  postMsg    │ dsp-processor.js     │      │
+│  │ (existing)  │◄──────────►│ (thin wrapper)       │      │
+│  │             │             │   │                  │      │
+│  │ WebRuntime  │             │   ▼                  │      │
+│  │ juce-shim   │             │ ┌──────────────────┐ │      │
+│  └─────────────┘             │ │ C++ WASM (34KB)  │ │      │
+│        │                     │ │                  │ │      │
+│        │ decodeAudioData     │ │ • PCM playback   │ │      │
+│        ▼                     │ │ • Transport      │ │      │
+│  ┌─────────────┐   PCM      │ │ • Gain (H/PL)   │ │      │
+│  │ File picker │────────────►│ │ • Source blend   │ │      │
+│  │ / D&D       │  transfer   │ │ • LPF (TPT SVF) │ │      │
+│  └─────────────┘             │ │ • Metering (dB)  │ │      │
+│                              │ │ • Loop / Seek    │ │      │
+│                              │ └──────────────────┘ │      │
+│                              └──────────────────────┘      │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Key design decision**: Audio processing logic (playback position, transport, gain, LPF, metering, source blending) lives entirely in C++ WASM. The JavaScript AudioWorklet is a thin wrapper that calls `dsp_process_block()` and relays state updates to the main thread at ~20Hz.
+
+### How the UI is reused
+
+The existing React components import from `juce-framework-frontend-mirror` and `bridge/juce`. For the web build, Vite aliases swap these to web-compatible shims:
+
+| Plugin build | Web build | Purpose |
+|---|---|---|
+| `juce-framework-frontend-mirror` | `bridge/web/juce-shim.ts` | Parameter state objects (SliderState, ToggleState, ComboBoxState) |
+| `bridge/juce.ts` | `bridge/web/web-juce.ts` | Bridge manager (`juceBridge.callNative`, `addEventListener`, etc.) |
+
+This means **zero changes to component code** — `Playlist.tsx`, `Transport.tsx`, `VUMeter.tsx`, `Controls.tsx`, and `GainFader.tsx` work identically in both environments.
+
+### Directory structure
+
+```
+MixCompare/
+├── wasm/                          # C++ DSP for WASM (JUCE-free)
+│   ├── src/
+│   │   ├── dsp_engine.h           # Full audio engine (tracks, transport, DSP)
+│   │   ├── svt_filter.h           # StateVariableTPT LPF (Zavalishin)
+│   │   ├── smoothed_value.h       # LinearSmoothedValue equivalent
+│   │   ├── metering.h             # RMS / Peak / TruePeak / LKFS
+│   │   ├── momentary_processor.h  # ITU-R BS.1770-4 K-weighting
+│   │   └── wasm_exports.cpp       # extern "C" FFI for WASM
+│   └── CMakeLists.txt             # Emscripten build (STANDALONE_WASM)
+├── webui/
+│   ├── src/bridge/web/            # Web-specific bridge layer
+│   │   ├── WebAudioEngine.ts      # AudioContext + Worklet manager
+│   │   ├── WebBridgeManager.ts    # juceBridge drop-in replacement
+│   │   ├── WebParamState.ts       # SliderState / ToggleState / ComboBoxState
+│   │   ├── juce-shim.ts           # juce-framework-frontend-mirror shim
+│   │   └── web-juce.ts            # bridge/juce.ts alias target
+│   ├── public-web/                # Web-only static assets (not in plugin build)
+│   │   ├── worklet/dsp-processor.js
+│   │   ├── wasm/mixcompare_dsp.wasm
+│   │   └── audio/sample.mp3       # Host demo audio
+│   ├── vite.config.web.ts         # Web SPA build config (aliases + mergePublicWeb plugin)
+│   └── vite.config.ts             # Plugin build config (unchanged)
+```
+
+### Building the Web version
+
+#### Prerequisites
+
+- Node.js 18+
+- Emscripten SDK (emsdk)
+
+#### 1. Install Emscripten
+
+```bash
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk
+./emsdk install latest
+./emsdk activate latest
+source emsdk_env.sh  # or emsdk_env.bat on Windows
+```
+
+#### 2. Build WASM
+
+```bash
+cd wasm
+mkdir build && cd build
+emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
+emmake cmake --build .
+cp dist/mixcompare_dsp.wasm ../../webui/public-web/wasm/
+```
+
+#### 3. Run the Web version
+
+```bash
+cd webui
+npm install
+npm run dev:web    # → http://127.0.0.1:5174
+```
+
+#### 4. Production build & deploy
+
+```bash
+npm run build:web  # → dist/
+# Deploy dist/ to Firebase Hosting, Vercel, Netlify, etc.
+```
+
+### npm scripts
+
+| Script | Description |
+|---|---|
+| `npm run dev` | Plugin WebView dev server (port 5173) |
+| `npm run dev:web` | Web SPA dev server (port 5174) |
+| `npm run build` | Plugin WebView production build |
+| `npm run build:web` | Web SPA production build → `dist/` |
+
+### Inspiration
+
+This experiment was inspired by [kodama-vst](https://github.com/yuichkun/kodama-vst), which uses a shared Rust DSP core compiled to both native (for JUCE plugin) and WASM (for web). MixCompare takes a different approach — compiling existing C++ DSP directly to WASM via Emscripten, avoiding the need to rewrite in Rust.
+
 ## Contributing
 
 1. Fork the repository
