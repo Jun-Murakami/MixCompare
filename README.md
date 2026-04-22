@@ -59,61 +59,67 @@ A professional audio plugin for DAW final stage mixing that provides instant swi
 
 ### Build Instructions
 
+Both `build_windows.ps1` and `build_macos.zsh` auto-load a `.env` file in the project root (`KEY=VALUE` per line). Existing environment variables are not overwritten, so you can still export values in your shell if you prefer. `.env` is gitignored.
+
+Recommended: drop a single `.env` with the PACE credentials and let both scripts pick them up.
+
+```dotenv
+# .env — project root, gitignored
+PACE_USERNAME=your-ilok-account
+PACE_PASSWORD=your-ilok-password
+PACE_ORGANIZATION=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX   # WCGUID (per-plugin, issued at https://pc2.paceap.com/)
+PACE_KEYPASSWORD=your-pfx-password                        # Windows only (matches the PFX export password)
+```
+
 #### Windows
 
-1. **Set up environment variables** (optional, for signed builds)
-   Add to your PowerShell profile (`$PROFILE`):
+1. **Set PACE credentials** — either put the four keys above into `.env`, or export them via `$PROFILE`:
    ```powershell
-   # PACE Anti-Piracy signing credentials (for developers only)
-   $env:PACE_USERNAME = "your-username"
-   $env:PACE_PASSWORD = "your-password"
-   $env:PACE_ORGANIZATION = "your-org-guid"
-   $env:PACE_KEYPASSWORD = "your-key-password"
-   
-   # PFX certificate path (optional - will fallback to project root if not set)
-   $env:PACE_PFX_PATH = "D:\path\to\your\certificate.pfx"
+   $env:PACE_USERNAME    = "your-username"
+   $env:PACE_PASSWORD    = "your-password"
+   $env:PACE_ORGANIZATION = "your-wcguid"
+   $env:PACE_KEYPASSWORD = "your-pfx-password"
+   $env:PACE_PFX_PATH    = "D:\path\to\certificate.pfx"   # optional; defaults to project root lookup
    ```
 
 2. **Build the plugin**
    ```powershell
-   .\build_windows_release.ps1
+   .\build_windows.ps1
    ```
 
-   **Note**: If PACE credentials are not set, the build will create unsigned plugins suitable for development and testing.
-   
+   If PACE credentials are missing, the build still succeeds — it just emits an unsigned plugin and records the reason in the summary (`certificate_missing` / `credentials_missing` / etc.).
+
    **AAX Build Options**:
-   - If AAX SDK is not available, AAX plugin builds will be skipped automatically
-   - VST3 and Standalone builds will still work without AAX SDK
-   
-   **Certificate Options**:
-   - Set `PACE_PFX_PATH` environment variable to specify custom certificate location
-   - Place `mixcompare-dev.pfx` in project root directory
-   - Place certificate in `%USERPROFILE%\.mixcompare\dev.pfx`
-   - Place certificate in `.\certificates\mixcompare-dev.pfx`
+   - If the AAX SDK is not available, AAX plugin builds are skipped automatically
+   - VST3 and Standalone builds always work without the AAX SDK
+
+   **Certificate lookup order** (first match wins):
+   - `$env:PACE_PFX_PATH` (explicit path)
+   - `<project root>\mixcompare-dev.pfx`
+   - `%USERPROFILE%\.mixcompare\dev.pfx`
+   - `.\certificates\mixcompare-dev.pfx`
 
 #### macOS
 
-1. **Set up environment variables** (optional, for signed builds)
-   Add to your shell profile:
+1. **Set PACE credentials** — same `.env` keys work here, or export in your shell profile:
    ```bash
-   # PACE Anti-Piracy signing credentials (for developers only)
    export PACE_USERNAME="your-username"
    export PACE_PASSWORD="your-password"
-   export PACE_ORGANIZATION="your-org-guid"
-   export PACE_KEYPASSWORD="your-key-password"
-   
+   export PACE_ORGANIZATION="your-wcguid"
+   # PACE_KEYPASSWORD is not used on macOS (wraptool signs via iLok USB, not a PFX)
+
    # Code signing (optional - will auto-detect from Keychain if not set)
    export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-   
+
    # Notarization (choose one method)
    # Method 1: App Store Connect API Key
    export APPLE_API_KEY_PATH="/path/to/AuthKey_XXXXXXXXXX.p8"
    export APPLE_API_KEY_ID="XXXXXXXXXX"
    export APPLE_API_ISSUER="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-   
+
    # Method 2: Keychain Profile (recommended)
    export NOTARYTOOL_PROFILE="your-profile-name"
-   
+
    # Method 3: Apple ID (legacy)
    export APPLE_ID="your-apple-id@example.com"
    export APP_PASSWORD="your-app-specific-password"
@@ -122,15 +128,17 @@ A professional audio plugin for DAW final stage mixing that provides instant swi
 
 2. **Build the plugin**
    ```bash
-   ./build_local_macos.zsh
+   ./build_macos.zsh
    ```
 
+   `build_macos.zsh` reads the same `PACE_USERNAME` / `PACE_PASSWORD` / `PACE_ORGANIZATION` trio from the environment (no hardcoded credentials). If any of the three is missing, the wraptool step is skipped with a `Missing PACE credentials: ...` notice and the build continues as an unsigned developer build. `PACE_WCGUID` is accepted as a fallback name for `PACE_ORGANIZATION` for backwards compatibility.
+
    **Note**: macOS builds automatically detect code signing certificates from Keychain. If `CODESIGN_IDENTITY` is not set, the script will automatically find and use the first available "Developer ID Application" certificate.
-   
+
    **AAX Build Options**:
-   - If AAX SDK is not available, AAX plugin builds will be skipped automatically
-   - VST3, AU, and Standalone builds will still work without AAX SDK
-   
+   - If the AAX SDK is not available, AAX plugin builds are skipped automatically
+   - VST3, AU, and Standalone builds always work without the AAX SDK
+
    **Keychain Integration**:
    - Code signing certificates are automatically detected from Keychain
    - Notarization credentials can be stored as Keychain profiles
