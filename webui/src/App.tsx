@@ -10,6 +10,7 @@ import { Playlist } from './components/Playlist';
 import { VUMeter } from './components/VUMeter';
 import { Controls } from './components/Controls';
 import { useHostShortcutForwarding } from './hooks/useHostShortcutForwarding';
+import { useGlobalZoomGuard } from './hooks/useGlobalZoomGuard';
 import { GlobalDialog } from './components/GlobalDialog';
 import { showErrorDialog, showWarningDialog, showInfoDialog } from './store/dialogStore';
 import LicenseDialog from './components/LicenseDialog';
@@ -33,6 +34,7 @@ function extractDroppedFiles(dataTransfer: DataTransfer): File[] {
 function App() {
   // JUCEイベントリスナーを初期化
   useHostShortcutForwarding();
+  useGlobalZoomGuard();
   const dragState = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
 
   // Web 版: ドラッグ&ドロップでファイル追加

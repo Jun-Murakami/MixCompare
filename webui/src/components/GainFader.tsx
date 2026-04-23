@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Box, Slider, Input, Typography } from '@mui/material';
 import { styled, lighten, darken } from '@mui/material/styles';
 import { getSliderState } from 'juce-framework-frontend-mirror';
+import { useFineAdjustPointer } from '../hooks/useFineAdjustPointer';
+import { useNumberInputAdjust } from '../hooks/useNumberInputAdjust';
 
 interface GainFaderProps {
   /** 直接バインドする JUCE パラメータID（例: 'HOST_GAIN', 'PLAYLIST_GAIN'） */
@@ -282,53 +284,79 @@ export const GainFader: React.FC<GainFaderProps> = ({
     onDragEnd?.();
   };
 
-  // Ctrl/Cmd+クリックでデフォルト値にリセット
-  const handleSliderClick = (event: React.MouseEvent) => {
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      event.stopPropagation();
-      setLocalValue(defaultValue);
-      setInputValue(defaultValue <= -120 ? '-∞' : defaultValue.toFixed(1));
-      const n = defaultValue <= -120 ? 0 : (defaultValue + 120) / 120;
-      sliderStateRef.current?.setNormalisedValue(n);
-    }
+  // 共通の値適用ヘルパー（UI state と JUCE の両方へ反映）
+  const applyDbValue = (db: number) => {
+    const clamped = Math.max(-120, Math.min(0, db));
+    setLocalValue(clamped);
+    setInputValue(clamped <= -120 ? '-∞' : clamped.toFixed(1));
+    const n = clamped <= -120 ? 0 : (clamped + 120) / 120;
+    sliderStateRef.current?.setNormalisedValue(n);
   };
+
+  // wheel / drag 共通: 現在値と fine フラグから次の dB 刻みを決める
+  const stepForWheel = (current: number, fine: boolean): number => {
+    if (fine) return 0.1;
+    if (current <= -30) return 10; // -30dB 以下は 10dB 刻みで素早く
+    return 1.0;
+  };
+
+  // 修飾キー + ポインタ操作：
+  //  Ctrl/Cmd + クリック      → defaultValue にリセット
+  //  (Ctrl/Cmd/Shift) + ドラッグ → 微調整モード（1px = 0.1 dB の固定感度）
+  //  修飾キーなし              → MUI Slider の通常ドラッグに委譲
+  const fineDragStartValueRef = useRef<number>(0);
+  const handlePointerDownCapture = useFineAdjustPointer({
+    orientation: 'vertical',
+    onReset: () => applyDbValue(defaultValue),
+    onDragStart: () => {
+      fineDragStartValueRef.current = localValueRef.current;
+      sliderStateRef.current?.sliderDragStarted();
+    },
+    onDragDelta: (deltaPx) => {
+      // 1px = 0.1 dB。FabFilter 系の fine drag と同等レベルの感度。
+      applyDbValue(fineDragStartValueRef.current + deltaPx * 0.1);
+    },
+    onDragEnd: () => sliderStateRef.current?.sliderDragEnded(),
+  });
 
   // ネイティブ wheel リスナー（passive: false）を登録して、スクロール抑止と細かなゲイン調整を実現
   useEffect(() => {
     const el = wheelAreaRef.current;
     if (!el) return;
     const handleWheelNative = (event: WheelEvent) => {
-      // ブラウザスクロールを抑止（非パッシブリスナーのため有効）
       event.preventDefault();
       const current = localValueRef.current;
-      // ホイール方向（上方向が正）
-      const delta = -event.deltaY;
-      // 調整量の決定
-      let step: number;
-      if (event.shiftKey) {
-        // Shift+ホイール: 細かい調整（0.1dB）
-        step = 0.1;
-      } else if (current <= -30) {
-        // -30dB 以下は大きめの刻み（10dB）で素早く移動
-        step = 10;
-      } else {
-        // 通常: 標準調整（1dB）
-        step = 1.0;
-      }
-      const direction = delta > 0 ? 1 : -1;
-      const newValue = Math.max(-120, Math.min(0, current + step * direction));
-      // UI と JUCE へ反映
-      setLocalValue(newValue);
-      setInputValue(newValue <= -120 ? '-∞' : newValue.toFixed(1));
-      const n = newValue <= -120 ? 0 : (newValue + 120) / 120;
-      sliderStateRef.current?.setNormalisedValue(n);
+      const fine = event.shiftKey || event.ctrlKey || event.metaKey || event.altKey;
+      const step = stepForWheel(current, fine);
+      const direction = -event.deltaY > 0 ? 1 : -1;
+      applyDbValue(current + step * direction);
     };
     el.addEventListener('wheel', handleWheelNative, { passive: false });
     return () => {
       el.removeEventListener('wheel', handleWheelNative as EventListener);
     };
   }, [parameterId]);
+
+  // 数値入力欄（dB）のホイール / 縦ドラッグ
+  const inputElRef = useRef<HTMLInputElement | null>(null);
+  const inputDragStartValueRef = useRef<number>(0);
+  useNumberInputAdjust(inputElRef, {
+    onWheelStep: (direction, fine) => {
+      const current = localValueRef.current;
+      const step = stepForWheel(current, fine);
+      applyDbValue(current + step * direction);
+    },
+    onDragStart: () => {
+      inputDragStartValueRef.current = localValueRef.current;
+      sliderStateRef.current?.sliderDragStarted();
+    },
+    onDragDelta: (deltaY, fine) => {
+      // 入力欄 drag: 1px = 1 dB（通常） / 0.1 dB（fine）
+      const step = fine ? 0.1 : 1.0;
+      applyDbValue(inputDragStartValueRef.current + deltaY * step);
+    },
+    onDragEnd: () => sliderStateRef.current?.sliderDragEnded(),
+  });
 
   // 目盛りの値と位置（下から上へのdB値）
   const scaleMarks = [
@@ -363,17 +391,16 @@ export const GainFader: React.FC<GainFaderProps> = ({
         }}
       >
         {/* フェーダー本体 */}
-        <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center' }} ref={wheelAreaRef}>
+        <Box
+          sx={{ position: 'relative', display: 'flex', alignItems: 'center' }}
+          ref={wheelAreaRef}
+          onPointerDownCapture={handlePointerDownCapture}
+        >
           {/* フェーダースライダー */}
           <StyledSlider
             value={dbToSlider(localValue)}
             onChange={handleSliderChange}
-            onMouseDown={(e) => {
-              handleSliderClick(e);
-              if (!e.defaultPrevented) {
-                handleDragStart();
-              }
-            }}
+            onMouseDown={handleDragStart}
             onMouseUp={handleDragEnd}
             onChangeCommitted={handleDragEnd}
             min={0}
@@ -442,6 +469,7 @@ export const GainFader: React.FC<GainFaderProps> = ({
       {/* 数値入力 */}
       <StyledInput
         className='block-host-shortcuts'
+        inputRef={inputElRef}
         value={inputValue}
         onChange={handleInputChange}
         onBlur={handleInputBlur}

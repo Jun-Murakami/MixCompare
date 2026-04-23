@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Typography, Slider, Switch, FormControlLabel, Input } from '@mui/material';
 import { getSliderState, getToggleState } from 'juce-framework-frontend-mirror';
+import { useFineAdjustPointer } from '../hooks/useFineAdjustPointer';
+import { useNumberInputAdjust } from '../hooks/useNumberInputAdjust';
 
 export const Controls: React.FC = () => {
   // JUCE 直接バインディング（LPF周り）
@@ -83,132 +85,67 @@ export const Controls: React.FC = () => {
     toggleState?.setValue(enabled);
   };
 
+  // 共通の値適用（UI と JUCE へ反映）
+  const applyFreq = (freq: number) => {
+    const clamped = Math.max(20, Math.min(20000, freq));
+    setLpfFreq(clamped);
+    const normLinear = (clamped - 20) / (20000 - 20);
+    sliderState?.setNormalisedValue(Math.max(0, Math.min(1, normLinear)));
+  };
+
+  // 周波数帯域に応じた wheel 1tick の増分を算出。fine フラグで 1/10 刻みへ。
+  //  境界をまたぐ場合は次の帯域の最小刻みへスナップして自然な段階感を出す。
+  const wheelNextFreq = (current: number, direction: 1 | -1, fine: boolean): number => {
+    const round = (v: number, unit: number) => Math.round(v / unit) * unit;
+    if (current <= 300) {
+      if (fine) return current + direction;
+      const next = round(current + 10 * direction, 10);
+      return next > 300 && direction > 0 ? 320 : next;
+    }
+    if (current <= 500) {
+      if (fine) return current + 2 * direction;
+      const next = round(current + 20 * direction, 20);
+      if (next <= 300 && direction < 0) return 300;
+      if (next > 500 && direction > 0) return 550;
+      return next;
+    }
+    if (current <= 1000) {
+      if (fine) return round(current + 5 * direction, 5);
+      const next = round(current + 50 * direction, 50);
+      if (next <= 500 && direction < 0) return 500;
+      if (next > 1000 && direction > 0) return 1100;
+      return next;
+    }
+    if (current <= 2000) {
+      if (fine) return round(current + 10 * direction, 10);
+      const next = round(current + 100 * direction, 100);
+      if (next <= 1000 && direction < 0) return 1000;
+      if (next > 2000 && direction > 0) return 2500;
+      return next;
+    }
+    if (current <= 5000) {
+      if (fine) return round(current + 50 * direction, 50);
+      const next = round(current + 500 * direction, 500);
+      if (next <= 2000 && direction < 0) return 2000;
+      if (next > 5000 && direction > 0) return 6000;
+      return next;
+    }
+    if (fine) return round(current + 100 * direction, 100);
+    const next = round(current + 1000 * direction, 1000);
+    if (next <= 5000 && direction < 0) return 5000;
+    return next;
+  };
+
   // LPFスライダー用のネイティブ wheel リスナー（passive: false）
   useEffect(() => {
     const el = lpfWheelAreaRef.current;
     if (!el) return;
     const handleWheelNative = (event: WheelEvent) => {
-      // フィルターOFF時でも編集可能にするため、早期 return はしない
       event.preventDefault();
-      const delta = -event.deltaY;
-      const direction = delta > 0 ? 1 : -1;
-      // 現在の周波数値（小数点以下を丸める）
-      const currentFreq = Math.round(lpfFreqRef.current);
-      let newFreq: number;
-
-      // 周波数帯域に応じた刻み幅で調整
-      if (currentFreq <= 300) {
-        // 20Hz～300Hz: 10Hz刻み
-        if (event.shiftKey) {
-          // Shift: ±1Hz（細かい調整）
-          newFreq = currentFreq + direction;
-        } else {
-          // 通常: ±10Hz
-          newFreq = currentFreq + 10 * direction;
-          newFreq = Math.round(newFreq / 10) * 10; // 10Hz単位に丸める
-
-          // 境界処理: 300を超えたら次の帯域の刻み幅にスナップ
-          if (newFreq > 300 && direction > 0) {
-            newFreq = 320; // 300の次は320（20Hz刻みの最初）
-          }
-        }
-      } else if (currentFreq <= 500) {
-        // 300Hz超～500Hz: 20Hz刻み
-        if (event.shiftKey) {
-          // Shift: ±2Hz（細かい調整）
-          newFreq = currentFreq + 2 * direction;
-        } else {
-          // 通常: ±20Hz
-          newFreq = currentFreq + 20 * direction;
-          newFreq = Math.round(newFreq / 20) * 20; // 20Hz単位に丸める
-
-          // 境界処理
-          if (newFreq <= 300 && direction < 0) {
-            newFreq = 300; // 300以下になったら300でスナップ
-          } else if (newFreq > 500 && direction > 0) {
-            newFreq = 550; // 500の次は550（50Hz刻みの最初）
-          }
-        }
-      } else if (currentFreq <= 1000) {
-        // 500Hz超～1000Hz: 50Hz刻み
-        if (event.shiftKey) {
-          // Shift: ±5Hz（細かい調整）
-          newFreq = currentFreq + 5 * direction;
-          newFreq = Math.round(newFreq / 5) * 5; // 5Hz単位に丸める
-        } else {
-          // 通常: ±50Hz
-          newFreq = currentFreq + 50 * direction;
-          newFreq = Math.round(newFreq / 50) * 50; // 50Hz単位に丸める
-
-          // 境界処理
-          if (newFreq <= 500 && direction < 0) {
-            newFreq = 500; // 500以下になったら500でスナップ
-          } else if (newFreq > 1000 && direction > 0) {
-            newFreq = 1100; // 1000の次は1100（100Hz刻みの最初）
-          }
-        }
-      } else if (currentFreq <= 2000) {
-        // 1000Hz超～2000Hz: 100Hz刻み
-        if (event.shiftKey) {
-          // Shift: ±10Hz（細かい調整）
-          newFreq = currentFreq + 10 * direction;
-          newFreq = Math.round(newFreq / 10) * 10; // 10Hz単位に丸める
-        } else {
-          // 通常: ±100Hz
-          newFreq = currentFreq + 100 * direction;
-          newFreq = Math.round(newFreq / 100) * 100; // 100Hz単位に丸める
-
-          // 境界処理
-          if (newFreq <= 1000 && direction < 0) {
-            newFreq = 1000; // 1000以下になったら1000でスナップ
-          } else if (newFreq > 2000 && direction > 0) {
-            newFreq = 2500; // 2000の次は2500（500Hz刻みの最初）
-          }
-        }
-      } else if (currentFreq <= 5000) {
-        // 2000Hz超～5000Hz: 500Hz刻み
-        if (event.shiftKey) {
-          // Shift: ±50Hz（細かい調整）
-          newFreq = currentFreq + 50 * direction;
-          newFreq = Math.round(newFreq / 50) * 50; // 50Hz単位に丸める
-        } else {
-          // 通常: ±500Hz
-          newFreq = currentFreq + 500 * direction;
-          newFreq = Math.round(newFreq / 500) * 500; // 500Hz単位に丸める
-
-          // 境界処理
-          if (newFreq <= 2000 && direction < 0) {
-            newFreq = 2000; // 2000以下になったら2000でスナップ
-          } else if (newFreq > 5000 && direction > 0) {
-            newFreq = 6000; // 5000の次は6000（1000Hz刻みの最初）
-          }
-        }
-      } else {
-        // 5000Hz超～20kHz: 1000Hz刻み
-        if (event.shiftKey) {
-          // Shift: ±100Hz（細かい調整）
-          newFreq = currentFreq + 100 * direction;
-          newFreq = Math.round(newFreq / 100) * 100; // 100Hz単位に丸める
-        } else {
-          // 通常: ±1000Hz
-          newFreq = currentFreq + 1000 * direction;
-          newFreq = Math.round(newFreq / 1000) * 1000; // 1000Hz単位に丸める
-
-          // 境界処理
-          if (newFreq <= 5000 && direction < 0) {
-            newFreq = 5000; // 5000以下になったら5000でスナップ
-          }
-        }
-      }
-
-      // 範囲制限（20Hz～20000Hz）
-      newFreq = Math.max(20, Math.min(20000, newFreq));
-
-      // 周波数を設定
-      setLpfFreq(newFreq);
-      // JUCE 側へは線形正規化で送信
-      const normLinear = (newFreq - 20) / (20000 - 20);
-      sliderState?.setNormalisedValue(Math.max(0, Math.min(1, normLinear)));
+      const current = Math.round(lpfFreqRef.current);
+      const direction: 1 | -1 = -event.deltaY > 0 ? 1 : -1;
+      const fine = event.shiftKey || event.ctrlKey || event.metaKey || event.altKey;
+      applyFreq(wheelNextFreq(current, direction, fine));
     };
     el.addEventListener('wheel', handleWheelNative, { passive: false });
     return () => {
@@ -216,19 +153,49 @@ export const Controls: React.FC = () => {
     };
   }, [sliderState]);
 
-  // LPFスライダーのCtrl/Cmd+クリックでリセット
-  const handleLpfClick = (event: React.MouseEvent) => {
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      event.stopPropagation();
+  // 修飾キー + ポインタ操作：
+  //  Ctrl/Cmd + クリック      → デフォルト値 120 Hz へリセット
+  //  (Ctrl/Cmd/Shift) + ドラッグ → 微調整モード（log 空間で 1px = 0.0015 norm）
+  //  修飾キーなし              → MUI Slider の通常ドラッグに委譲
+  //
+  // スライダー本体は 0..1 のカスタム log 位置にマップされているため、
+  // 元の位置を freqToSlider で取得して pixel delta を足し、sliderToFreq で値域へ戻す。
+  const fineDragStartSliderRef = useRef<number>(0);
+  const handleLpfPointerDownCapture = useFineAdjustPointer({
+    orientation: 'horizontal',
+    onReset: () => applyFreq(120),
+    onDragStart: () => {
+      fineDragStartSliderRef.current = freqToSlider(lpfFreqRef.current);
+      sliderState?.sliderDragStarted();
+    },
+    onDragDelta: (deltaPx) => {
+      // 1px = 0.0015（スライダー 0..1 の正規化位置）。log 軸全域（20Hz..20kHz）を
+      // 約 660px で横断。微調整の意図で丁度良い感度。
+      const newSliderPos = Math.max(0, Math.min(1, fineDragStartSliderRef.current + deltaPx * 0.0015));
+      applyFreq(sliderToFreq(newSliderPos));
+    },
+    onDragEnd: () => sliderState?.sliderDragEnded(),
+  });
 
-      // デフォルト値（120Hz）にリセット
-      const defaultFreq = 120;
-      setLpfFreq(defaultFreq);
-      const normLinear = (defaultFreq - 20) / (20000 - 20);
-      sliderState?.setNormalisedValue(Math.max(0, Math.min(1, normLinear)));
-    }
-  };
+  // 数値入力欄（Hz）のホイール / 縦ドラッグ
+  const inputElRef = useRef<HTMLInputElement | null>(null);
+  const inputDragStartSliderRef = useRef<number>(0);
+  useNumberInputAdjust(inputElRef, {
+    onWheelStep: (direction, fine) => {
+      const current = Math.round(lpfFreqRef.current);
+      applyFreq(wheelNextFreq(current, direction, fine));
+    },
+    onDragStart: () => {
+      inputDragStartSliderRef.current = freqToSlider(lpfFreqRef.current);
+      sliderState?.sliderDragStarted();
+    },
+    onDragDelta: (deltaY, fine) => {
+      const step = fine ? 0.0015 : 0.005;
+      const newSliderPos = Math.max(0, Math.min(1, inputDragStartSliderRef.current + deltaY * step));
+      applyFreq(sliderToFreq(newSliderPos));
+    },
+    onDragEnd: () => sliderState?.sliderDragEnded(),
+  });
 
   // 入力値の初期化と同期
   useEffect(() => {
@@ -351,6 +318,7 @@ export const Controls: React.FC = () => {
           {/* フィルターOFF時でも編集可能にするため、disabledは設定しない */}
           <Input
             className='block-host-shortcuts'
+            inputRef={inputElRef}
             value={inputValue}
             onChange={handleInputChange}
             onBlur={handleInputBlur}
@@ -388,19 +356,12 @@ export const Controls: React.FC = () => {
         </Box>
       </Box>
       {/* スライダーは枠の内側いっぱいに広がる */}
-      <Box sx={{ px: 1 }} ref={lpfWheelAreaRef}>
+      <Box sx={{ px: 1 }} ref={lpfWheelAreaRef} onPointerDownCapture={handleLpfPointerDownCapture}>
         {/* フィルターOFF時でも周波数スライダーを操作可能にするため、disabledは設定しない */}
         <Slider
           value={freqToSlider(lpfFreq)}
           onChange={handleLpfFreqChange}
-          // Ctrl/Cmd+クリックでの即時リセットと、通常ドラッグの開始を両立
-          onMouseDown={(e) => {
-            // Ctrl/Cmd+クリック時はリセットのみ（ドラッグ開始は送らない）
-            if (e.ctrlKey || e.metaKey) {
-              handleLpfClick(e);
-              return;
-            }
-            // 通常ドラッグ開始: JUCE へ開始ジェスチャーを送る
+          onMouseDown={() => {
             if (!isDragging) {
               setIsDragging(true);
               sliderState?.sliderDragStarted();
