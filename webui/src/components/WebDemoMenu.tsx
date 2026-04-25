@@ -1,12 +1,9 @@
 import React, { useState } from 'react';
 import {
   Box,
+  Button,
   Drawer,
   IconButton,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
   Typography,
   Divider,
   Tooltip,
@@ -65,26 +62,33 @@ export const WebDemoMenu: React.FC = () => {
               px: 2,
               pt: 2,
               pb: 0.5,
-              color: 'text.secondary',
+              color: 'text.primary',
               fontWeight: 600,
               letterSpacing: 0.5,
-              textTransform: 'uppercase',
             }}
           >
             {section.title}
           </Typography>
-          <List dense disablePadding>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, px: 2, pb: 1 }}>
             {section.links.map((link) => (
-              <ListItem key={link.href} disablePadding>
-                <ListItemButton component='a' href={link.href}>
-                  <ListItemText
-                    primary={link.label}
-                    sx={{ '& .MuiListItemText-primary': { fontSize: '0.9rem' } }}
-                  />
-                </ListItemButton>
-              </ListItem>
+              <Button
+                key={link.href}
+                component='a'
+                href={link.href}
+                size='small'
+                variant='text'
+                sx={{
+                  textTransform: 'none',
+                  fontSize: '0.8rem',
+                  minWidth: 'auto',
+                  px: 1,
+                  py: 0.25,
+                }}
+              >
+                {link.label}
+              </Button>
             ))}
-          </List>
+          </Box>
           {sectionIdx < MENU_SECTIONS.length - 1 && <Divider sx={{ mt: 1 }} />}
         </Box>
       ))}

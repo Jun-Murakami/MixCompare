@@ -1,33 +1,38 @@
 [
   {
-    "title": "Demo Site",
+    "title": "ZeroEQ",
     "links": [
-      { "label": "ZeroEQ", "href": "https://zeroeq-demo.web.app/" },
-      { "label": "ZeroComp", "href": "https://zerocomp-demo.web.app/" },
-      { "label": "ZeroLimit", "href": "https://zerolimit-demo.web.app/" },
-      { "label": "MixCompare", "href": "https://mixcompare-demo.web.app/" }
+      { "label": "Demo Site",   "href": "https://zeroeq-demo.web.app/" },
+      { "label": "Download",    "href": "https://jun-murakami.web.app/#zeroEq" },
+      { "label": "Source Code", "href": "https://github.com/Jun-Murakami/ZeroEQ" }
     ]
   },
   {
-    "title": "Download Plugin",
+    "title": "ZeroComp",
     "links": [
-      { "label": "ZeroEQ", "href": "https://jun-murakami.web.app/#zeroEq" },
-      { "label": "ZeroComp", "href": "https://jun-murakami.web.app/#zeroComp" },
-      { "label": "ZeroLimit", "href": "https://jun-murakami.web.app/#zeroLimit" },
-      { "label": "MixCompare", "href": "https://jun-murakami.web.app/#mixCompare" }
+      { "label": "Demo Site",   "href": "https://zerocomp-demo.web.app/" },
+      { "label": "Download",    "href": "https://jun-murakami.web.app/#zeroComp" },
+      { "label": "Source Code", "href": "https://github.com/Jun-Murakami/ZeroComp" }
     ]
   },
   {
-    "title": "Source Code",
+    "title": "ZeroLimit",
     "links": [
-      { "label": "ZeroEQ", "href": "https://github.com/Jun-Murakami/ZeroEQ" },
-      { "label": "ZeroComp", "href": "https://github.com/Jun-Murakami/ZeroComp" },
-      { "label": "ZeroLimit", "href": "https://github.com/Jun-Murakami/ZeroLimit" },
-      { "label": "MixCompare", "href": "https://github.com/Jun-Murakami/MixCompare" }
+      { "label": "Demo Site",   "href": "https://zerolimit-demo.web.app/" },
+      { "label": "Download",    "href": "https://jun-murakami.web.app/#zeroLimit" },
+      { "label": "Source Code", "href": "https://github.com/Jun-Murakami/ZeroLimit" }
     ]
   },
   {
-    "title": "Other Plugins / Software",
+    "title": "MixCompare",
+    "links": [
+      { "label": "Demo Site",   "href": "https://mixcompare-demo.web.app/" },
+      { "label": "Download",    "href": "https://jun-murakami.web.app/#mixCompare" },
+      { "label": "Source Code", "href": "https://github.com/Jun-Murakami/MixCompare" }
+    ]
+  },
+  {
+    "title": "Other Plugin / Software",
     "links": [
       { "label": "jun-murakami.web.app", "href": "https://jun-murakami.web.app" }
     ]
