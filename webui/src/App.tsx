@@ -1,6 +1,6 @@
 import { ThemeProvider } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
-import { Box, Paper, Typography, Button, Menu, MenuItem } from '@mui/material';
+import { Box, Paper, Typography, Button, Menu, MenuItem, useMediaQuery } from '@mui/material';
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { juceBridge } from './bridge/juce';
 import { darkTheme } from './theme';
@@ -14,6 +14,8 @@ import { useGlobalZoomGuard } from './hooks/useGlobalZoomGuard';
 import { GlobalDialog } from './components/GlobalDialog';
 import { showErrorDialog, showWarningDialog, showInfoDialog } from './store/dialogStore';
 import LicenseDialog from './components/LicenseDialog';
+import { WebDemoMenu, MENU_WIDE_QUERY, MENU_DRAWER_WIDTH } from './components/WebDemoMenu';
+import { WebTransportBar } from './components/WebTransportBar';
 import './App.css';
 
 const isWebMode = import.meta.env.VITE_RUNTIME === 'web';
@@ -36,6 +38,9 @@ function App() {
   useHostShortcutForwarding();
   useGlobalZoomGuard();
   const dragState = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+
+  // Web デモ専用ドロワー: viewport >= 1200px で常時表示。カードと被らないよう右パディングを確保。
+  const wideDrawerDocked = useMediaQuery(MENU_WIDE_QUERY) && isWebMode;
 
   // Web 版: ドラッグ&ドロップでファイル追加
   const [isDragOver, setIsDragOver] = useState(false);
@@ -219,13 +224,33 @@ function App() {
           caret-color: auto;
         }
       `}</style>
-      <Box sx={isWebMode ? { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', py: 4 } : undefined}>
+      <Box sx={isWebMode ? { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', py: 4, pl: 2, pr: wideDrawerDocked ? `${MENU_DRAWER_WIDTH}px` : 2 } : undefined}>
+      {isWebMode && (
+        <Box sx={{ width: '100%', maxWidth: 392 }}>
+          <Typography
+            variant='caption'
+            sx={{
+              display: 'block',
+              px: 1.5,
+              color: 'text.secondary',
+              fontWeight: 600,
+              letterSpacing: 1,
+              textTransform: 'uppercase',
+              fontSize: '0.65rem',
+              mb: 0.25,
+            }}
+          >
+            Input
+          </Typography>
+          <WebTransportBar />
+        </Box>
+      )}
       <Box
         sx={{
           flexGrow: isWebMode ? 0 : 1,
-          height: isWebMode ? 800 : '100vh',
+          height: isWebMode ? 610 : '100vh',
           width: isWebMode ? '100%' : undefined,
-          maxWidth: isWebMode ? 500 : undefined,
+          maxWidth: isWebMode ? 392 : undefined,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
@@ -301,7 +326,7 @@ function App() {
 
       {/* Web 版: コンテナ下の説明文 */}
       {isWebMode && (
-        <Typography variant='caption' color='text.secondary' sx={{ mt: 3, textAlign: 'center', maxWidth: 500, lineHeight: 1.8 }}>
+        <Typography variant='caption' color='text.secondary' sx={{ mt: 3, textAlign: 'center', maxWidth: 392, lineHeight: 1.8 }}>
           You can switch between and compare the playback audio from the HOST (DAW) and the playlist.
           <br />
           HOST（DAW）の再生音と、プレイリストの再生音を切り替えて比較することができます。
@@ -350,6 +375,7 @@ function App() {
 
       <LicenseDialog open={licenseOpen} onClose={closeLicenseDialog} />
       <GlobalDialog />
+      {isWebMode && <WebDemoMenu />}
     </ThemeProvider>
   );
 }

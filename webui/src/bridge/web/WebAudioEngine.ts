@@ -35,7 +35,14 @@ export class WebAudioEngine {
   private loopStart = 0;
   private loopEnd = 0;
 
-  // Host サンプルは C++ WASM 側で管理（JS 側のフィールドは不要）
+  // Host サンプルは C++ WASM 側で管理。JS 側は表示用に直近のメタ情報のみ保持。
+  private currentHostSource: { name: string; duration: number } | null = null;
+
+  // Host 専用 transport の最新状態（C++ から ~20Hz で更新）
+  private hostPosition = 0;
+  private hostDuration = 0;
+  private hostIsPlaying = false;
+  private hostLoopEnabled = true;
 
   private initialized = false;
   private initResolvers: Array<() => void> = [];
@@ -108,14 +115,26 @@ export class WebAudioEngine {
         this.duration = msg.duration as number;
         this.isPlaying = msg.isPlaying as boolean;
 
-        // 位置・トランスポート通知
+        // Host 独立 transport の最新値
+        this.hostPosition = (msg.hostPosition as number) ?? 0;
+        this.hostDuration = (msg.hostDuration as number) ?? 0;
+        this.hostIsPlaying = (msg.hostIsPlaying as boolean) ?? false;
+
+        // 位置・トランスポート通知（playlist）
         this.emit('transportPositionUpdate', {
           position: this.position,
           duration: this.duration,
           isPlaying: this.isPlaying,
         });
 
-        // 曲末自然停止
+        // Host 用通知（バーが購読）
+        this.emit('hostTransportPositionUpdate', {
+          position: this.hostPosition,
+          duration: this.hostDuration,
+          isPlaying: this.hostIsPlaying,
+        });
+
+        // 曲末自然停止 (playlist)
         if (msg.stoppedAtEnd) {
           this.isPlaying = false;
           this.emit('transportUpdate', {
@@ -125,6 +144,17 @@ export class WebAudioEngine {
             loopStart: 0,
             loopEnd: this.duration,
             loopEnabled: false,
+          });
+        }
+
+        // Host が loop 無効で末尾に到達した場合
+        if (msg.hostStoppedAtEnd) {
+          this.hostIsPlaying = false;
+          this.emit('hostTransportUpdate', {
+            isPlaying: false,
+            position: this.hostPosition,
+            duration: this.hostDuration,
+            loopEnabled: this.hostLoopEnabled,
           });
         }
 
@@ -264,6 +294,50 @@ export class WebAudioEngine {
     this.emitTransportUpdate();
   }
 
+  // ====== Host 独立トランスポート（playlist の play/pause/seek/setLoop と別系統） ======
+
+  async hostPlay(): Promise<void> {
+    await this.ensureAudioContext();
+    this.workletNode?.port.postMessage({ type: 'host-set-playing', value: true });
+    this.hostIsPlaying = true;
+    this.emit('hostTransportUpdate', {
+      isPlaying: true,
+      position: this.hostPosition,
+      duration: this.hostDuration,
+      loopEnabled: this.hostLoopEnabled,
+    });
+  }
+
+  hostPause(): void {
+    this.workletNode?.port.postMessage({ type: 'host-set-playing', value: false });
+    this.hostIsPlaying = false;
+    this.emit('hostTransportUpdate', {
+      isPlaying: false,
+      position: this.hostPosition,
+      duration: this.hostDuration,
+      loopEnabled: this.hostLoopEnabled,
+    });
+  }
+
+  hostSeek(positionSec: number): void {
+    this.hostPosition = positionSec;
+    this.workletNode?.port.postMessage({ type: 'host-seek', position: positionSec });
+  }
+
+  hostSetLoop(enabled: boolean): void {
+    this.hostLoopEnabled = enabled;
+    this.workletNode?.port.postMessage({ type: 'host-set-loop', enabled });
+    this.emit('hostTransportUpdate', {
+      isPlaying: this.hostIsPlaying,
+      position: this.hostPosition,
+      duration: this.hostDuration,
+      loopEnabled: enabled,
+    });
+  }
+
+  getHostIsPlaying(): boolean { return this.hostIsPlaying; }
+  getHostLoopEnabled(): boolean { return this.hostLoopEnabled; }
+
   // ====== DSP パラメータ → WASM 直送 ======
 
   setHostGain(db: number): void { this.workletNode?.port.postMessage({ type: 'set-param', param: 'host_gain', value: db }); }
@@ -283,16 +357,44 @@ export class WebAudioEngine {
       const r = await fetch(url);
       if (!r.ok) return;
       const audioBuf = await this.audioContext.decodeAudioData(await r.arrayBuffer());
-      const leftCopy = new Float32Array(audioBuf.getChannelData(0));
-      const rightCopy = new Float32Array(
-        audioBuf.numberOfChannels >= 2 ? audioBuf.getChannelData(1) : audioBuf.getChannelData(0)
-      );
-      this.workletNode?.port.postMessage({
-        type: 'load-host-track',
-        left: leftCopy.buffer, right: rightCopy.buffer,
-        numSamples: leftCopy.length, trackSampleRate: audioBuf.sampleRate,
-      }, [leftCopy.buffer, rightCopy.buffer]);
+      const name = url.split('/').pop() || url;
+      this.sendHostBufferToWasm(audioBuf, name);
     } catch { /* ignore */ }
+  }
+
+  // ユーザがアップロードしたファイルを HOST 入力に差し替える（Web デモ専用）。
+  async loadHostFromFile(file: File): Promise<void> {
+    if (!this.audioContext) return;
+    try {
+      await this.ensureAudioContext();
+      const audioBuf = await this.audioContext.decodeAudioData(await file.arrayBuffer());
+      this.sendHostBufferToWasm(audioBuf, file.name);
+    } catch (err) {
+      this.emit('errorNotification', {
+        severity: 'error',
+        message: `Decode failed: ${file.name}`,
+        details: String(err),
+      });
+    }
+  }
+
+  private sendHostBufferToWasm(audioBuf: AudioBuffer, displayName: string): void {
+    const leftCopy = new Float32Array(audioBuf.getChannelData(0));
+    const rightCopy = new Float32Array(
+      audioBuf.numberOfChannels >= 2 ? audioBuf.getChannelData(1) : audioBuf.getChannelData(0)
+    );
+    this.workletNode?.port.postMessage({
+      type: 'load-host-track',
+      left: leftCopy.buffer, right: rightCopy.buffer,
+      numSamples: leftCopy.length, trackSampleRate: audioBuf.sampleRate,
+    }, [leftCopy.buffer, rightCopy.buffer]);
+    this.currentHostSource = { name: displayName, duration: audioBuf.duration };
+    this.emit('sourceLoaded', { name: displayName, duration: audioBuf.duration });
+  }
+
+  // バー側で初期状態を一発取得するため（イベント取りこぼし対策）。
+  getCurrentHostSource(): { name: string; duration: number } | null {
+    return this.currentHostSource;
   }
 
   // ====== 状態取得 ======

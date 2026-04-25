@@ -95,6 +95,17 @@ class DspProcessor extends AudioWorkletProcessor {
         if (this.wasm) this.wasm.dsp_set_source_select(msg.value);
         break;
 
+      // === Host トランスポート (playlist と独立) ===
+      case 'host-set-playing':
+        if (this.wasm) this.wasm.dsp_host_set_playing(msg.value ? 1 : 0);
+        break;
+      case 'host-seek':
+        if (this.wasm) this.wasm.dsp_host_seek(msg.position);
+        break;
+      case 'host-set-loop':
+        if (this.wasm) this.wasm.dsp_host_set_loop(msg.enabled ? 1 : 0);
+        break;
+
       case 'set-param':
         if (!this.wasm) break;
         if (msg.param === 'host_gain') this.wasm.dsp_set_host_gain(msg.value);
@@ -158,6 +169,7 @@ class DspProcessor extends AudioWorkletProcessor {
       this.updateCounter = 0;
 
       const stoppedAtEnd = this.wasm.dsp_consume_stopped_at_end();
+      const hostStoppedAtEnd = this.wasm.dsp_host_consume_stopped_at_end();
 
       // C++ から dB 変換済みメーター値を一括取得
       this.wasm.dsp_get_meter_data(this.meterBufPtr);
@@ -171,6 +183,11 @@ class DspProcessor extends AudioWorkletProcessor {
         duration: this.wasm.dsp_get_duration(),
         isPlaying: !!this.wasm.dsp_is_playing(),
         stoppedAtEnd: !!stoppedAtEnd,
+        // Host (独立 transport) の状態
+        hostPosition: this.wasm.dsp_host_get_position(),
+        hostDuration: this.wasm.dsp_host_get_duration(),
+        hostIsPlaying: !!this.wasm.dsp_host_is_playing(),
+        hostStoppedAtEnd: !!hostStoppedAtEnd,
         meteringMode: mh[mo],
         host: {
           left: mh[mo+1], right: mh[mo+2],

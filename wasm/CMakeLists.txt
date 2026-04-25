@@ -23,10 +23,15 @@ if(EMSCRIPTEN)
         "_dsp_alloc_buffer" "_dsp_free_buffer" "_malloc" "_free"
         # Host
         "_dsp_load_host_track" "_dsp_set_source_select"
+        # Host トランスポート (playlist と独立)
+        "_dsp_host_set_playing" "_dsp_host_is_playing"
+        "_dsp_host_seek" "_dsp_host_set_loop"
+        "_dsp_host_get_position" "_dsp_host_get_duration"
+        "_dsp_host_consume_stopped_at_end"
         # トラック管理
         "_dsp_load_track" "_dsp_remove_track" "_dsp_clear_tracks"
         "_dsp_select_track" "_dsp_get_track_count" "_dsp_get_track_duration"
-        # トランスポート
+        # トランスポート (playlist)
         "_dsp_set_playing" "_dsp_is_playing" "_dsp_seek" "_dsp_set_loop"
         "_dsp_get_position" "_dsp_get_duration"
         "_dsp_get_current_track_index" "_dsp_consume_stopped_at_end"

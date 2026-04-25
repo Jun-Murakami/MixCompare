@@ -53,6 +53,43 @@ WASM_EXPORT void dsp_set_source_select(int source)
     if (g_engine) g_engine->setSourceSelect(source);
 }
 
+// ====== Host トランスポート（playlist transport とは別系統） ======
+
+WASM_EXPORT void dsp_host_set_playing(int playing)
+{
+    if (g_engine) g_engine->hostSetPlaying(playing != 0);
+}
+
+WASM_EXPORT int dsp_host_is_playing()
+{
+    return (g_engine && g_engine->hostIsPlaying()) ? 1 : 0;
+}
+
+WASM_EXPORT void dsp_host_seek(double positionSec)
+{
+    if (g_engine) g_engine->hostSeek(positionSec);
+}
+
+WASM_EXPORT void dsp_host_set_loop(int enabled)
+{
+    if (g_engine) g_engine->hostSetLoop(enabled != 0);
+}
+
+WASM_EXPORT double dsp_host_get_position()
+{
+    return g_engine ? g_engine->hostGetPositionSec() : 0.0;
+}
+
+WASM_EXPORT double dsp_host_get_duration()
+{
+    return g_engine ? g_engine->hostGetDurationSec() : 0.0;
+}
+
+WASM_EXPORT int dsp_host_consume_stopped_at_end()
+{
+    return (g_engine && g_engine->consumeHostStoppedAtEnd()) ? 1 : 0;
+}
+
 // ====== Playlist トラック管理 ======
 
 WASM_EXPORT void dsp_load_track(int index, const float* left, const float* right,

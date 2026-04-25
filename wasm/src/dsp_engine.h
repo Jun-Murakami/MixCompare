@@ -43,7 +43,7 @@ public:
         playlistGainSmoothed.reset(sr, 0.002);
         playlistGainSmoothed.setCurrentAndTargetValue(1.0f);
         sourceBlendSmoothed.reset(sr, 0.003);
-        sourceBlendSmoothed.setCurrentAndTargetValue(1.0f); // default=Playlist
+        sourceBlendSmoothed.setCurrentAndTargetValue(1.0f); // default=Playlist（plugin UI と一致）
         lpfMixSmoothed.reset(sr, 0.003);
         lpfMixSmoothed.setCurrentAndTargetValue(0.0f);
 
@@ -51,7 +51,11 @@ public:
         lastLpfEnabled = false;
     }
 
-    // ====== Host トラック（デモ用サンプル音源、常時ループ） ======
+    // ====== Host トラック（デモ用サンプル音源、独立トランスポート） ======
+    //
+    // 実プラグインでは HOST 入力は DAW 由来なので transport を持たない。
+    // Web デモでは DAW が居ないので、HOST 用の独立した play/pause/seek/loop を
+    // C++ 側に持たせて再現する。playlist 側 transport (playing/seek/setLoop) と完全独立。
 
     void loadHostTrack(const float* left, const float* right,
                        int numSamples, double trackSampleRate)
@@ -62,6 +66,43 @@ public:
         hostTrack.trackSampleRate = trackSampleRate;
         hostTrack.durationSec = trackSampleRate > 0 ? numSamples / trackSampleRate : 0.0;
         hostPlaybackPos = 0.0;
+        hostStoppedAtEnd = false;
+    }
+
+    // ====== Host トランスポート（playlist の playing/seek/setLoop とは別系統） ======
+
+    void hostSetPlaying(bool p)
+    {
+        if (p && hostTrack.numSamples == 0) return;
+        if (p && hostStoppedAtEnd) { hostPlaybackPos = 0.0; hostStoppedAtEnd = false; }
+        hostPlaying = p;
+    }
+    bool hostIsPlaying() const { return hostPlaying; }
+
+    void hostSeek(double positionSec)
+    {
+        if (hostTrack.numSamples <= 0 || hostTrack.trackSampleRate <= 0) return;
+        double pos = positionSec * hostTrack.trackSampleRate;
+        pos = std::max(0.0, std::min(pos, static_cast<double>(hostTrack.numSamples)));
+        hostPlaybackPos = pos;
+        hostStoppedAtEnd = false;
+    }
+
+    void hostSetLoop(bool enabled) { hostLoopEnabled = enabled; }
+    bool hostGetLoopEnabled() const { return hostLoopEnabled; }
+
+    double hostGetPositionSec() const
+    {
+        if (hostTrack.trackSampleRate <= 0) return 0.0;
+        return hostPlaybackPos / hostTrack.trackSampleRate;
+    }
+    double hostGetDurationSec() const { return hostTrack.durationSec; }
+
+    bool consumeHostStoppedAtEnd()
+    {
+        bool v = hostStoppedAtEnd;
+        hostStoppedAtEnd = false;
+        return v;
     }
 
     // ====== Playlist トラック管理 ======
@@ -188,18 +229,31 @@ public:
         float hostL[512], hostR[512], plL[512], plR[512];
         const int n = std::min(numSamples, 512);
 
-        // --- Host PCM（常時ループ再生） ---
-        if (hostTrack.numSamples > 0)
+        // --- Host PCM（独立トランスポート + ループ） ---
+        if (hostTrack.numSamples > 0 && hostPlaying)
         {
             for (int i = 0; i < n; ++i)
             {
-                int pos = static_cast<int>(hostPlaybackPos) % hostTrack.numSamples;
-                if (pos < 0) pos += hostTrack.numSamples;
+                if (hostPlaybackPos >= hostTrack.numSamples)
+                {
+                    if (hostLoopEnabled)
+                    {
+                        hostPlaybackPos = std::fmod(hostPlaybackPos, static_cast<double>(hostTrack.numSamples));
+                    }
+                    else
+                    {
+                        hostPlaying = false;
+                        hostStoppedAtEnd = true;
+                        for (int j = i; j < n; ++j) { hostL[j] = 0.0f; hostR[j] = 0.0f; }
+                        // i 以降を 0 で埋めたので外側の処理に進む
+                        goto host_done;
+                    }
+                }
+                int pos = static_cast<int>(hostPlaybackPos);
+                if (pos < 0) pos = 0;
                 hostL[i] = hostTrack.left[pos];
                 hostR[i] = hostTrack.right[pos];
                 hostPlaybackPos += 1.0;
-                if (hostPlaybackPos >= hostTrack.numSamples)
-                    hostPlaybackPos -= hostTrack.numSamples;
             }
         }
         else
@@ -207,6 +261,7 @@ public:
             std::memset(hostL, 0, sizeof(float) * n);
             std::memset(hostR, 0, sizeof(float) * n);
         }
+    host_done:;
 
         // --- Playlist PCM ---
         const auto* t = currentTrack();
@@ -319,9 +374,12 @@ private:
     double sampleRate = 44100.0;
     int blockSize = 128;
 
-    // Host
+    // Host (デモ用 — playlist transport とは独立)
     Track hostTrack;
     double hostPlaybackPos = 0.0;
+    bool hostPlaying = false;
+    bool hostLoopEnabled = true;
+    bool hostStoppedAtEnd = false;
     float hostGainDb = 0.0f;
 
     // Playlist
@@ -335,7 +393,8 @@ private:
     bool stoppedAtEnd = false;
     float playlistGainDb = 0.0f;
 
-    // ソース
+    // ソース。plugin UI APVTS 既定 (Playlist) と一致させる。
+    // ずらすと UI 未操作時に WASM/UI で食い違って意図しない音が出る。
     int sourceSelect = 1; // 0=Host, 1=Playlist
 
     // メータリング
