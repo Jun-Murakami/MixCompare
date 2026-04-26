@@ -16,6 +16,8 @@ A professional audio plugin for DAW final stage mixing that provides instant swi
 - **VST3**: Compatible with most modern DAWs
 - **AU**: Native macOS Audio Unit support
 - **AAX**: Protools
+- **LV2**: Linux only (autoinstalls to `~/.lv2/`)
+- **CLAP**: Linux only (autoinstalls to `~/.clap/`)
 - **Standalone**: Independent application for testing and reference
 
 ## System Requirements
@@ -29,6 +31,11 @@ A professional audio plugin for DAW final stage mixing that provides instant swi
 - macOS 10.15 or later
 - Xcode 12 or later (for building)
 - CMake 3.22 or later
+
+### Linux (WSL2 Ubuntu 24.04 verified)
+- gcc 13+ / clang
+- CMake 3.22 or later, Ninja
+- Required apt packages — see [Linux build instructions](#linux) below
 
 ## Building from Source
 
@@ -143,6 +150,34 @@ PACE_KEYPASSWORD=your-pfx-password                        # Windows only (matche
    - Code signing certificates are automatically detected from Keychain
    - Notarization credentials can be stored as Keychain profiles
    - No hardcoded paths or credentials required
+
+#### Linux
+
+Tested on **WSL2 Ubuntu 24.04**, but should work on any modern glibc-based distro with `webkit2gtk-4.1` available.
+
+```bash
+sudo apt update
+sudo apt install -y \
+  build-essential pkg-config cmake ninja-build git \
+  libasound2-dev libjack-jackd2-dev libcurl4-openssl-dev \
+  libfreetype-dev libfontconfig1-dev \
+  libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+  libxinerama-dev libxrandr-dev libxrender-dev \
+  libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev libgtk-3-dev
+
+git submodule update --init --recursive   # JUCE + clap-juce-extensions
+bash build_linux.sh                        # Release VST3 / LV2 / CLAP / Standalone + zip
+```
+
+Output:
+
+- Build artefacts: `build-linux/plugin/MixCompare_artefacts/Release/{VST3,LV2,CLAP,Standalone}/`
+- Auto-installed: `~/.vst3/MixCompare.vst3`, `~/.lv2/MixCompare.lv2`, `~/.clap/MixCompare.clap`
+- Distribution zip: `releases/<VERSION>/MixCompare_<VERSION>_Linux_VST3_LV2_CLAP_Standalone.zip`
+
+LV2 and CLAP are gated behind `if(UNIX AND NOT APPLE)` in CMake, so existing Windows / macOS release flows are unaffected. AU and AAX are skipped on Linux as expected.
+
+> **Note**: The bundled MACLib (Monkey's Audio) is forced to `POSITION_INDEPENDENT_CODE ON` only when building for Linux, so it can be linked into the shared `.so` / `.clap` modules. Windows uses PE/COFF and macOS makes static libs PIC by default, so this only affects Linux builds.
 
 ### Development Build
 

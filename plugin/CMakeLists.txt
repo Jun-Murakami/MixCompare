@@ -42,6 +42,12 @@ if(APPLE)
     set_property(GLOBAL PROPERTY JUCE_AAX_COPY_DIR "${CMAKE_BINARY_DIR}/AAX_Plugins")
 endif()
 
+# Linux ビルド時のみ LV2 を FORMATS に追加（既存の Windows/macOS リリース経路には影響させない）
+set(MIXCOMPARE_FORMATS AU VST3 Standalone AAX)
+if(UNIX AND NOT APPLE)
+    list(APPEND MIXCOMPARE_FORMATS LV2)
+endif()
+
 # プラグイン定義（JUCE v8）
 juce_add_plugin(MixCompare
     VERSION ${PROJECT_VERSION}                     # プラグインのバージョン（JUCEは数値のみ受け付ける）
@@ -50,7 +56,8 @@ juce_add_plugin(MixCompare
     BUNDLE_ID "com.junmurakami.mixcompare"         # Bundle ID（スペースなし）
     PLUGIN_MANUFACTURER_CODE Jmbc                  # メーカーコード（4文字）
     PLUGIN_CODE Mx03                               # プラグインコード（4文字）
-    FORMATS AU VST3 Standalone AAX  # 対応フォーマット（AAXが有効な場合のみビルドされる）
+    FORMATS ${MIXCOMPARE_FORMATS}                  # 対応フォーマット（AAXが有効な場合のみビルドされる）
+    LV2URI "https://junmurakami.com/plugins/mixcompare"
     PLUGIN_AU_MAIN_TYPE "aufx"                     # Audio Unit メインタイプ（エフェクト）
     VST3_CATEGORIES "Analyzer"                     # VST3カテゴリ
     AAX_CATEGORY "AAX_ePlugInCategory_SWGenerators|AAX_ePlugInCategory_SoundField"  # AAXカテゴリ（インストゥルメント扱い）
@@ -69,6 +76,13 @@ juce_add_plugin(MixCompare
 
 # JUCE の共通ヘッダー(JuceHeader.h)を生成し、インクルードパスへ追加
 juce_generate_juce_header(MixCompare)
+
+# Linux ビルド時のみ CLAP ターゲットを生成（clap-juce-extensions 経由）
+if(UNIX AND NOT APPLE)
+    clap_juce_extensions_plugin(TARGET MixCompare
+        CLAP_ID "com.junmurakami.mixcompare"
+        CLAP_FEATURES audio-effect utility analyzer)
+endif()
 
 # ソースファイルの登録
 target_sources(MixCompare PRIVATE

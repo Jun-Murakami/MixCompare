@@ -28,6 +28,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # JUCEを追加
 add_subdirectory(JUCE)
 
+# clap-juce-extensions（Linux ビルドでのみ CLAP ターゲットを生成）
+if(UNIX AND NOT APPLE)
+    add_subdirectory(clap-juce-extensions EXCLUDE_FROM_ALL)
+endif()
+
 # AAX SDKの設定
 set(AAX_SDK_PATH "${CMAKE_SOURCE_DIR}/aax-sdk" CACHE PATH "Path to AAX SDK")
 if(EXISTS "${AAX_SDK_PATH}/Interfaces/AAX.h")
@@ -79,6 +84,12 @@ endif()
 
 # Monkey's Audio SDK（APE デコーダー）
 add_subdirectory(plugin/lib/mac_sdk)
+
+# Linux で共有ライブラリ（VST3 / LV2 / CLAP）に MACLib を混ぜ込めるよう PIC を付与
+# （Windows は PE/COFF で PIC 概念なし、macOS は既定で PIC 化されるため Linux のみで十分）
+if(UNIX AND NOT APPLE)
+    set_target_properties(MACLib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 
 # 共有設定: 子ディレクトリへ渡すソースルート（plugin 配下へ集約）
 set(MIXCOMPARE_SRC_DIR "${CMAKE_SOURCE_DIR}/plugin/src")
