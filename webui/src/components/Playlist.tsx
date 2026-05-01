@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 import React, { useEffect, useRef } from 'react';
 import { getSliderState } from 'juce-framework-frontend-mirror';
 import { Box, IconButton, Typography, Button, Tooltip } from '@mui/material';

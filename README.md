@@ -380,7 +380,9 @@ This experiment was inspired by [kodama-vst](https://github.com/yuichkun/kodama-
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later) — see the [LICENSE](LICENSE) file for the full text.
+
+It uses [JUCE](https://juce.com/) under the AGPLv3 option of its dual-licensing scheme. Other third-party SDKs (VST3 / AAX / WebView2 / etc.) are governed by their own licenses; the runtime dependency list is shown in the in-app *Licenses* dialog.
 
 ## Acknowledgments
 

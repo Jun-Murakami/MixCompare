@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 import React, { useState, useEffect } from 'react';
 import { Box, IconButton, Typography, Slider, Tooltip, Button, InputBase, Popover, Paper } from '@mui/material';
 import { PlayArrow, Pause, SkipPrevious, SkipNext, Repeat, Clear as ClearIcon, Sync } from '@mui/icons-material';

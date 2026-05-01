@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 import React, { useEffect, useState } from 'react';
 import { Box, ButtonBase } from '@mui/material';
 import { getComboBoxState } from 'juce-framework-frontend-mirror';

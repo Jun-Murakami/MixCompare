@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 /**
  * bridge/juce.ts のドロップイン置換。
  * Vite エイリアスでコンポーネントの `import { juceBridge } from '../bridge/juce'` が

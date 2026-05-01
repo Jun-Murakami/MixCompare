@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 /**
  * Web Audio API + WASM AudioWorklet のマネージャ。
  * トランスポート・再生位置・ループは全て C++ WASM 側が管理。

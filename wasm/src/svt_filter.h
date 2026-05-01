@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 #pragma once
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 /**
  * JuceBridgeManager の Web 互換実装。
  * 既存コンポーネントが `juceBridge.addEventListener(...)` 等を呼ぶのと同じ API を提供する。

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 // 共通ユーティリティ: 数値フォーマット
 // フロントエンドの表示仕様に合わせて、周波数(Hz)の表示を整形する。
 // 仕様:

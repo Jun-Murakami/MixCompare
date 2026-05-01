@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 import React from 'react';
 import { Box, IconButton, Typography } from '@mui/material';
 import { Clear, DragIndicator } from '@mui/icons-material';

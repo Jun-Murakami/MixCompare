@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 #include "AudioEngine.h"
 #include "FormatUtils.h" // 表示用フォーマット/量子化（周波数）
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Jun Murakami
 import React, { useState, useEffect, useRef } from 'react';
 import { Box, Typography, Slider, Switch, FormControlLabel, Input } from '@mui/material';
 import { getSliderState, getToggleState } from 'juce-framework-frontend-mirror';
