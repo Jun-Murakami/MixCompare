@@ -904,7 +904,7 @@
     "path": "/Users/jun/SourceCode/JUCE/MixCompare/webui/node_modules/tslib",
     "licenseFile": "/Users/jun/SourceCode/JUCE/MixCompare/webui/node_modules/tslib/LICENSE.txt"
   },
-  "webui@3.0.2": {
+  "webui@3.0.3": {
     "licenses": "UNLICENSED",
     "private": true,
     "path": "/Users/jun/SourceCode/JUCE/MixCompare/webui",
