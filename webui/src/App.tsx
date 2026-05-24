@@ -85,27 +85,57 @@ function App() {
     backgroundPosition: 'bottom right',
   };
 
-  // WebUI右下にリサイズハンドルを設置し、ドラッグで window_action.resizeTo を呼ぶ
+  // WebUI 右下のリサイズハンドル。ドラッグで window_action.resizeTo を native に送る。
+  //  バックプレッシャ方式: host への resize は往復処理（callNative の Promise は VST3 の
+  //  onSize 完了で解決）。完了を待たず高頻度に送ると要求が積み上がり、ウィンドウがカーソルから
+  //  どんどん遅れていく。「往復中は次を送らず、完了時に最新の保留サイズだけを送る」ことで、
+  //  host が捌ける最大レートで常に最新サイズだけを届け、蓄積遅延を無くす。
+  const pendingResize  = useRef<{ w: number; h: number } | null>(null);
+  const lastSentSize   = useRef<{ w: number; h: number } | null>(null);
+  const resizeInFlight = useRef(false);
+
+  const pumpResize = () => {
+    if (resizeInFlight.current) return;
+    const s = pendingResize.current;
+    if (!s) return;
+    const last = lastSentSize.current;
+    if (last && last.w === s.w && last.h === s.h) { pendingResize.current = null; return; }
+    pendingResize.current = null;
+    lastSentSize.current = s;
+    resizeInFlight.current = true;
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resizeInFlight.current = false;
+      pumpResize();
+    };
+    const safety = window.setTimeout(done, 200); // 完了応答が来なくてもフリーズしない安全策
+    void juceBridge.callNative('window_action', 'resizeTo', s.w, s.h).then(() => {
+      window.clearTimeout(safety);
+      done();
+    });
+  };
+
   const onDragStart: React.PointerEventHandler<HTMLDivElement> = (e) => {
     dragState.current = { startX: e.clientX, startY: e.clientY, startW: window.innerWidth, startH: window.innerHeight };
+    lastSentSize.current = { w: window.innerWidth, h: window.innerHeight };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onDrag: React.PointerEventHandler<HTMLDivElement> = (e) => {
     if (!dragState.current) return;
     const dx = e.clientX - dragState.current.startX;
     const dy = e.clientY - dragState.current.startY;
-    const w = Math.max(392, dragState.current.startW + dx);
-    const h = Math.max(610, dragState.current.startH + dy);
-    // 高頻度呼び出しをrAFでスロットル
-    if (!window.__resizeRAF) {
-      window.__resizeRAF = requestAnimationFrame(() => {
-        window.__resizeRAF = 0;
-        juceBridge.callNative('window_action', 'resizeTo', w, h);
-      });
-    }
+    const w = Math.round(Math.max(392, dragState.current.startW + dx));
+    const h = Math.round(Math.max(610, dragState.current.startH + dy));
+    pendingResize.current = { w, h };
+    pumpResize();
   };
-  const onDragEnd: React.PointerEventHandler<HTMLDivElement> = () => {
+  const onDragEnd: React.PointerEventHandler<HTMLDivElement> = (e) => {
     dragState.current = null;
+    pumpResize();
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId))
+      e.currentTarget.releasePointerCapture(e.pointerId);
   };
 
   // テストエラー発生関数
@@ -321,7 +351,6 @@ function App() {
             onPointerMove={onDrag}
             onPointerUp={onDragEnd}
             style={handleStyle}
-            title='Resize'
           />
         )}
       </Box>
