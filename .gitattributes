@@ -1,0 +1,29 @@
+# 改行コードは LF に統一する（Windows / Linux / macOS 間の CRLF 差分を防ぐ）。
+#   text=auto : テキストと判定したファイルをリポジトリ内では LF に正規化
+#   eol=lf    : チェックアウト時も常に LF（OS やローカル設定に依存しない＝LF強制）
+* text=auto eol=lf
+
+# バイナリは変換しない（現在追跡中の実バイナリは画像・アイコンのみ）
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+
+# 将来追加されうるバイナリ（フォント・音声・アーカイブ・ビルド成果物）
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.wav   binary
+*.aiff  binary
+*.flac  binary
+*.zip   binary
+*.so    binary
+*.dll   binary
+*.dylib binary
+*.a     binary
+*.wasm  binary
+*.vst3  binary
+*.clap  binary
