@@ -17,6 +17,12 @@
 
 set -euo pipefail
 
+# LV2 マニフェスト生成時、JUCE の WebView は gdk_set_allowed_backends("x11") で
+# X11 バックエンドを要求する。GNOME/Wayland セッションでは環境に GDK_BACKEND=wayland が
+# あり、許可バックエンドの積集合が空になって gtk_init が失敗する（"cannot open display"）。
+# X11 を明示指定して衝突を回避する（WSL2 等 GDK_BACKEND 未設定の環境でも無害）。
+export GDK_BACKEND=x11
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
