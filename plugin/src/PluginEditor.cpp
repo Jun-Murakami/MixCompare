@@ -428,20 +428,35 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
     // リサイズ可能に設定（プラグイン・スタンドアロン共通）
     setResizable(true, true);
     setResizeLimits(392, 610, 2560, 1440);
-    
+
     // リサイズ制約を設定
     resizerConstraints.setMinimumSize(392, 610);
     resizerConstraints.setMaximumSize(2560, 1440);
-    
-    // リサイズグリッパー（右下の角に表示される三角形のハンドル）を作成
-    resizer = std::make_unique<juce::ResizableCornerComponent>(this, &resizerConstraints);
-    addAndMakeVisible(resizer.get());
-    resizer->setAlwaysOnTop(true);
-    
-    // グリッパーのサイズを設定
-    const int gripperSize = 24;
-    resizer->setBounds(getWidth() - gripperSize, getHeight() - gripperSize, gripperSize, gripperSize);
-    resizer->toFront(true);  // 最前面に配置
+
+    // CLAP 版だけリサイズ機能そのものを止める。setResizeLimits が host 側の resizable を
+    //  自動再設定してしまうので、必ず setResizeLimits の後で setResizable(false, false) を
+    //  呼ぶ。JUCE 内蔵 corner resizer の生成もここで抑止される。
+    const bool runningAsClap =
+        audioProcessor.wrapperType == juce::AudioProcessor::wrapperType_Undefined;
+    if (runningAsClap)
+        setResizable(false, false);
+
+    // リサイズグリッパー（右下の角に表示される三角形のハンドル）を作成。
+    //  CLAP 版では生成しない。juce::ResizableCornerComponent::hitTest が
+    //  Component::ignoresMouseClicksFlag を参照しない override なので、`setInterceptsMouseClicks`
+    //  だけでは triangle 領域の hit を抑えられないため、生成自体を回避する。
+    //  ハンドルの見た目は WebUI 側の `#resizeHandle::after` CSS が引き続き描画する。
+    if (! runningAsClap)
+    {
+        resizer = std::make_unique<juce::ResizableCornerComponent>(this, &resizerConstraints);
+        addAndMakeVisible(resizer.get());
+        resizer->setAlwaysOnTop(true);
+
+        // グリッパーのサイズを設定
+        const int gripperSize = 24;
+        resizer->setBounds(getWidth() - gripperSize, getHeight() - gripperSize, gripperSize, gripperSize);
+        resizer->toFront(true);  // 最前面に配置
+    }
     
     // リサイズボーダーの幅を広げる
     if (auto* resizeConstrainer = getConstrainer())
@@ -1285,6 +1300,14 @@ void MixCompare3AudioProcessorEditor::handleWindowAction(
     const juce::Array<juce::var>& args,
     juce::WebBrowserComponent::NativeFunctionCompletion completion)
 {
+    // CLAP 版ではリサイズハンドルの機能を一律無効化する（見た目は残す）。
+    //  clap-juce-extensions は wrapperType を上書きしないので Undefined のままになる。
+    if (audioProcessor.wrapperType == juce::AudioProcessor::wrapperType_Undefined)
+    {
+        completion(juce::var{ false });
+        return;
+    }
+
     if (args.size() < 1)
     {
         completion(juce::var{ false });
