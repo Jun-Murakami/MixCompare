@@ -8,7 +8,13 @@ add_executable(mixcompare_dsp
     src/wasm_exports.cpp
 )
 
-target_include_directories(mixcompare_dsp PRIVATE src)
+# DSP プリミティブ (svt_filter / smoothed_value / metering / momentary_processor) は
+# plugin/dsp/ に集約し plugin・wasm で共有する (SSoT)。wasm 側のソース行は無改変で、
+# include パスを通すだけで従来通り解決する (= Web デモ挙動は不変)。
+target_include_directories(mixcompare_dsp PRIVATE
+    src
+    "${CMAKE_CURRENT_SOURCE_DIR}/../plugin/dsp"
+)
 
 if(EMSCRIPTEN)
     set_target_properties(mixcompare_dsp PROPERTIES

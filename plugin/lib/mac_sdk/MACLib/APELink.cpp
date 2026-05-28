@@ -3,6 +3,7 @@
 #include "CharacterHelper.h"
 #include "IAPEIO.h"
 #include "MACLib.h"
+
 namespace APE
 {
 

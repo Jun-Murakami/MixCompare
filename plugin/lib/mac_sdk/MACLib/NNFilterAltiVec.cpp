@@ -28,6 +28,7 @@
 
 namespace APE
 {
+
 bool GetAltiVecAvailable()
 {
 #ifdef APE_USE_ALTIVEC_INTRINSICS

@@ -1,5 +1,5 @@
 # Monkey's Audio SDK - 静的ライブラリとして MixCompare に組み込む
-# SDK version: 12.60 (BSD 3-Clause License)
+# SDK version: 12.98 (BSD 3-Clause License)
 
 cmake_minimum_required(VERSION 3.15)
 
@@ -58,6 +58,7 @@ set(MAC_LIB_SOURCES
     ${MAC_SDK_DIR}/MACLib/Old/APEDecompressOld.cpp
     ${MAC_SDK_DIR}/MACLib/Old/UnBitArrayOld.cpp
     ${MAC_SDK_DIR}/MACLib/Old/UnMACOld.cpp
+    ${MAC_SDK_DIR}/MACLib/Old/NewPredictorOld.cpp  # 12.98 で追加
 )
 
 # アーキテクチャ別 SIMD フィルタ

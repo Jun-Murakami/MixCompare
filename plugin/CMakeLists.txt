@@ -10,6 +10,22 @@ endif()
 
 find_package(iPlug2 REQUIRED)
 
+# Windows の deploy 先を system-wide な Common Files 配下に上書きする (iPlug2 の素の
+# デフォルトは $LOCALAPPDATA\Programs\Common\... の per-user)。主要 DAW は system 側を
+# スキャンするため、開発ビルドが per-user では見えなくなる場合がある。
+# 注意: 初期状態の Common Files\CLAP は ACL が厳しくユーザー書き込み不可のことがある。
+# その場合は管理者 PowerShell で以下を実行して権限付与:
+#   icacls "C:\Program Files\Common Files\CLAP" /grant "Everyone:(OI)(CI)(F)" /T
+# (-DIPLUG_*_DEPLOY_PATH=... での明示指定があれば尊重。)
+if(WIN32)
+    if(NOT IPLUG_VST3_DEPLOY_PATH)
+        set(IPLUG_VST3_DEPLOY_PATH "$ENV{PROGRAMFILES}/Common Files/VST3")
+    endif()
+    if(NOT IPLUG_CLAP_DEPLOY_PATH)
+        set(IPLUG_CLAP_DEPLOY_PATH "$ENV{PROGRAMFILES}/Common Files/CLAP")
+    endif()
+endif()
+
 # macOS Standalone (SWELL) は IPlugAPP_main.cpp が resources/main.rc_mac_dlg /
 # main.rc_mac_menu を #include する。main.rc から swell_resgen.pl で生成する派生物で、
 # iPlug2 helper は自動実行しないため configure 時に走らせる。
@@ -121,11 +137,34 @@ if(WIN32)
     endforeach()
 endif()
 
-# Monkey's Audio (.ape) デコード用 MACLib を全フォーマットにリンク (include は PUBLIC 伝播)。
+# 旧 JUCE 版 (copyXmlToBinary = zlib 圧縮 XML) で保存されたプロジェクト状態を復元する
+# ための zlib inflate。iPlug2 同梱の WDL/zlib から uncompress に必要な最小ソースのみを
+# 静的ライブラリ化する (PUBLIC include で plugin から zlib.h を引けるようにする)。
+set(_mc_wdl_zlib "${CMAKE_SOURCE_DIR}/iPlug2/WDL/zlib")
+if(NOT TARGET mc_zlib AND EXISTS "${_mc_wdl_zlib}/uncompr.c")
+    add_library(mc_zlib STATIC
+        "${_mc_wdl_zlib}/adler32.c"
+        "${_mc_wdl_zlib}/crc32.c"
+        "${_mc_wdl_zlib}/inffast.c"
+        "${_mc_wdl_zlib}/inflate.c"
+        "${_mc_wdl_zlib}/inftrees.c"
+        "${_mc_wdl_zlib}/zutil.c"
+        "${_mc_wdl_zlib}/uncompr.c"
+    )
+    target_include_directories(mc_zlib PUBLIC "${_mc_wdl_zlib}")
+    if(UNIX AND NOT APPLE)
+        set_target_properties(mc_zlib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
+endif()
+
+# Monkey's Audio (.ape) デコード用 MACLib + 状態移行用 mc_zlib を全フォーマットにリンク。
 foreach(_fmt vst3 clap aax au app)
     set(_target "MixCompare-${_fmt}")
     if(TARGET ${_target})
         target_link_libraries(${_target} PRIVATE MACLib)
+        if(TARGET mc_zlib)
+            target_link_libraries(${_target} PRIVATE mc_zlib)
+        endif()
     endif()
 endforeach()
 

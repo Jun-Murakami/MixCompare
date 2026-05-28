@@ -50,6 +50,7 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 [Components]
 Name: "standalone"; Description: "Standalone Application"; Types: full custom
 Name: "vst3"; Description: "VST3 Plugin"; Types: full compact custom
+Name: "clap"; Description: "CLAP Plugin"; Types: full compact custom
 Name: "aax"; Description: "AAX Plugin (Pro Tools)"; Types: full custom
 
 [Tasks]
@@ -57,12 +58,18 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Components: standalone; Flags: unchecked; OnlyBelowVersion: 6.1
 
 [Files]
-; Standalone Application
-Source: "build\plugin\MixCompare_artefacts\Release\Standalone\MixCompare.exe"; DestDir: "{code:GetStandalonePath}"; Flags: ignoreversion; Components: standalone
-Source: "build\plugin\MixCompare_artefacts\Release\Standalone\*.dll"; DestDir: "{code:GetStandalonePath}"; Flags: ignoreversion skipifsourcedoesntexist; Components: standalone
+; いずれも build_windows.ps1 が releases\<ver>\Windows\ に配置・署名済みの成果物を使う
+; (iPlug2 は build\out\ に出力するが、配布物は署名後の releases 配下が正)。
 
-; VST3 Plugin
-Source: "build\plugin\MixCompare_artefacts\Release\VST3\MixCompare.vst3\*"; DestDir: "{code:GetVST3Path}\MixCompare.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: vst3
+; Standalone Application
+Source: "releases\{#MyAppVersion}\Windows\MixCompare.exe"; DestDir: "{code:GetStandalonePath}"; Flags: ignoreversion; Components: standalone
+Source: "releases\{#MyAppVersion}\Windows\*.dll"; DestDir: "{code:GetStandalonePath}"; Flags: ignoreversion skipifsourcedoesntexist; Components: standalone
+
+; VST3 Plugin (bundle)
+Source: "releases\{#MyAppVersion}\Windows\MixCompare.vst3\*"; DestDir: "{code:GetVST3Path}\MixCompare.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: vst3
+
+; CLAP Plugin (single file)
+Source: "releases\{#MyAppVersion}\Windows\MixCompare.clap"; DestDir: "{code:GetCLAPPath}"; Flags: ignoreversion; Components: clap
 
 ; AAX Plugin — バンドル全体を丸ごとコピー（入れ子は PrepareToInstall で事前削除により防止）
 Source: "releases\{#MyAppVersion}\Windows\MixCompare.aaxplugin\*"; DestDir: "{code:GetAAXPath}\MixCompare.aaxplugin"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: aax
@@ -98,6 +105,9 @@ Type: filesandordirs; Name: "{userappdata}\MixCompare"
 ; Register VST3 plugin location
 Root: HKLM64; Subkey: "Software\VST3"; ValueType: string; ValueName: "MixCompare"; ValueData: "{code:GetVST3Path}\MixCompare.vst3"; Flags: uninsdeletevalue; Components: vst3
 
+; Register CLAP plugin location
+Root: HKLM64; Subkey: "Software\CLAP"; ValueType: string; ValueName: "MixCompare"; ValueData: "{code:GetCLAPPath}\MixCompare.clap"; Flags: uninsdeletevalue; Components: clap
+
 ; Register AAX plugin location
 Root: HKLM64; Subkey: "Software\Avid\ProTools\AAX"; ValueType: string; ValueName: "MixCompare"; ValueData: "{code:GetAAXPath}\MixCompare.aaxplugin"; Flags: uninsdeletevalue; Components: aax
 
@@ -108,6 +118,7 @@ var
   PathSelectionPage: TInputDirWizardPage;
   StandalonePath: String;
   VST3Path: String;
+  CLAPPath: String;
   AAXPath: String;
 
 function NeedsVCRedist(): Boolean;
@@ -165,9 +176,12 @@ begin
   
   PathSelectionPage.Add('VST3 Plugin:');
   PathSelectionPage.Values[1] := ExpandConstant('{commoncf64}\VST3');
-  
+
+  PathSelectionPage.Add('CLAP Plugin:');
+  PathSelectionPage.Values[2] := ExpandConstant('{commoncf64}\CLAP');
+
   PathSelectionPage.Add('AAX Plugin (Pro Tools):');
-  PathSelectionPage.Values[2] := ExpandConstant('{commoncf64}\Avid\Audio\Plug-Ins');
+  PathSelectionPage.Values[3] := ExpandConstant('{commoncf64}\Avid\Audio\Plug-Ins');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -182,22 +196,26 @@ begin
   // Skip the path selection page if no components are selected
   else if PageID = PathSelectionPage.ID then
   begin
-    Result := not (IsComponentSelected('standalone') or IsComponentSelected('vst3') or IsComponentSelected('aax'));
-    
+    Result := not (IsComponentSelected('standalone') or IsComponentSelected('vst3') or IsComponentSelected('clap') or IsComponentSelected('aax'));
+
     // Dynamically show/hide path inputs based on selected components
     if not Result then
     begin
       PathSelectionPage.Edits[0].Visible := IsComponentSelected('standalone');
       PathSelectionPage.Buttons[0].Visible := IsComponentSelected('standalone');
       PathSelectionPage.PromptLabels[0].Visible := IsComponentSelected('standalone');
-      
+
       PathSelectionPage.Edits[1].Visible := IsComponentSelected('vst3');
       PathSelectionPage.Buttons[1].Visible := IsComponentSelected('vst3');
       PathSelectionPage.PromptLabels[1].Visible := IsComponentSelected('vst3');
-      
-      PathSelectionPage.Edits[2].Visible := IsComponentSelected('aax');
-      PathSelectionPage.Buttons[2].Visible := IsComponentSelected('aax');
-      PathSelectionPage.PromptLabels[2].Visible := IsComponentSelected('aax');
+
+      PathSelectionPage.Edits[2].Visible := IsComponentSelected('clap');
+      PathSelectionPage.Buttons[2].Visible := IsComponentSelected('clap');
+      PathSelectionPage.PromptLabels[2].Visible := IsComponentSelected('clap');
+
+      PathSelectionPage.Edits[3].Visible := IsComponentSelected('aax');
+      PathSelectionPage.Buttons[3].Visible := IsComponentSelected('aax');
+      PathSelectionPage.PromptLabels[3].Visible := IsComponentSelected('aax');
     end;
   end
   else if PageID = DownloadPage.ID then
@@ -213,7 +231,8 @@ begin
   begin
     StandalonePath := PathSelectionPage.Values[0];
     VST3Path := PathSelectionPage.Values[1];
-    AAXPath := PathSelectionPage.Values[2];
+    CLAPPath := PathSelectionPage.Values[2];
+    AAXPath := PathSelectionPage.Values[3];
   end
   else if CurPageID = wpReady then
   begin
@@ -383,6 +402,14 @@ begin
     Result := ExpandConstant('{commoncf64}\VST3')
   else
     Result := VST3Path;
+end;
+
+function GetCLAPPath(Param: String): String;
+begin
+  if CLAPPath = '' then
+    Result := ExpandConstant('{commoncf64}\CLAP')
+  else
+    Result := CLAPPath;
 end;
 
 function GetAAXPath(Param: String): String;

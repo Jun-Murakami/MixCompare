@@ -647,6 +647,67 @@ void CAPETag::SetIgnoreReadOnly(bool bIgnoreReadOnly)
     m_bIgnoreReadOnly = bIgnoreReadOnly;
 }
 
+int CAPETag::OutputTag(str_utfn * pOutput, int nOutputLength)
+{
+    // empty output
+    pOutput[0] = 0;
+
+    // output tag type
+    const int nTagSize = 256;
+    str_utfn cTag[nTagSize]; APE_CLEAR(cTag);
+    wcscpy_s(cTag, nTagSize, L"None");
+    bool bKeepAppending = true;
+    if (GetHasAPETag())
+    {
+        swprintf(cTag, nTagSize, L"APE Tag v%.2f", static_cast<double>(GetAPETagVersion()) / static_cast<double>(1000));
+        if (GetHasID3Tag())
+            SafeStringAppend(cTag, nTagSize, L", ID3v1.1", bKeepAppending);
+    }
+    else if (GetHasID3Tag())
+    {
+        wcscpy_s(cTag, nTagSize, L"ID3v1.1");
+    }
+
+    const int nLineSize = 4096;
+    str_utfn cLine[nLineSize]; APE_CLEAR(cLine);
+    swprintf(cLine, nLineSize, L"Tag: %s (%d bytes)", cTag, GetTagBytes());
+
+    SafeStringAppend(pOutput, static_cast<size_t>(nOutputLength), cLine, bKeepAppending);
+    SafeStringAppend(pOutput, static_cast<size_t>(nOutputLength), L"\r\n", bKeepAppending);
+
+    // output tag fields
+    int nTagIndex = 0; IAPETagField * pTagField = APE_NULL;
+    while ((pTagField = GetTagField(nTagIndex++)) != APE_NULL)
+    {
+        if (pTagField->GetFieldFlags() & TAG_FIELD_FLAG_DATA_TYPE_BINARY)
+        {
+            swprintf(cLine, nLineSize, L"    %s: binary value (%d bytes)", pTagField->GetFieldName(), pTagField->GetFieldValueSize());
+
+            SafeStringAppend(pOutput, static_cast<size_t>(nOutputLength), cLine, bKeepAppending);
+            SafeStringAppend(pOutput, static_cast<size_t>(nOutputLength), L"\r\n", bKeepAppending);
+        }
+        else
+        {
+            const int nMaximumSize = 1024;
+            str_utfn cValue[nMaximumSize];
+            APE_CLEAR(cValue);
+            int nValueBytes = nMaximumSize - 1;
+            GetFieldString(pTagField->GetFieldName(), &cValue[0], &nValueBytes);
+
+            if (nValueBytes >= nMaximumSize)
+                swprintf(cValue, 1024, L"<too large to display> (%d bytes)", nValueBytes);
+
+            swprintf(cLine, nLineSize, L"    %s: %s",
+                pTagField->GetFieldName(),
+                cValue);
+            SafeStringAppend(pOutput, static_cast<size_t>(nOutputLength), cLine, bKeepAppending);
+            SafeStringAppend(pOutput, static_cast<size_t>(nOutputLength), L"\r\n", bKeepAppending);
+        }
+    }
+
+    return ERROR_SUCCESS;
+}
+
 static inline int Load32(const void * a)
 {
     return
@@ -969,6 +1030,20 @@ int CAPETag::SortFields()
         qsort(m_aryFields, static_cast<size_t>(m_nFields), sizeof(m_aryFields[0]), CompareFields);
 
     return ERROR_SUCCESS;
+}
+
+void CAPETag::SafeStringAppend(wchar_t * pDestination, size_t nDestinationSize, const wchar_t * pSource, bool & rbAppend)
+{
+    size_t nDestinationLength = wcslen(pDestination);
+    if (rbAppend && ((wcslen(pSource) + nDestinationLength) < nDestinationSize))
+    {
+        wcscat_s(pDestination, nDestinationSize, pSource);
+    }
+    else
+    {
+        // we've filled the string up, so stop appending future values
+        rbAppend = false;
+    }
 }
 
 int CAPETag::CompareFields(const void * pA, const void * pB)

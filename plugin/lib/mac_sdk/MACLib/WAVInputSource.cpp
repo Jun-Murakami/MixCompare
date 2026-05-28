@@ -1,4 +1,3 @@
-#include <stdint.h>
 #include "All.h"
 #include "WAVInputSource.h"
 #include "IAPEIO.h"
@@ -980,7 +979,7 @@ int CAIFFInputSource::GetTerminatingData(unsigned char * pBuffer)
     return GetTerminatingDataHelper(m_bIsValid, pBuffer, m_nTerminatingBytes, m_spIO);
 }
 
-double CAIFFInputSource::GetExtendedDouble(uint16_t exponent, uint64_t mantissa)
+double CAIFFInputSource::GetExtendedDouble(uint16_t nExponent, uint64_t nMantissa)
 {
     // this code is borrowed from David Bryant's WavPack
     // he said it derives from this:
@@ -988,10 +987,10 @@ double CAIFFInputSource::GetExtendedDouble(uint16_t exponent, uint64_t mantissa)
     // there's also code here:
     // https://stackoverflow.com/questions/2963055/convert-extended-precision-float-80-bit-to-double-64-bit-in-msvc
 
-    const double sign = (exponent & 0x8000) ? -1.0 : 1.0, value = static_cast<double>(mantissa);
-    const double scaler = pow(2.0, static_cast<double>(exponent & 0x7fff) - 16446);
-    const double result = value * scaler * sign;
-    return result;
+    const double dSign = (nExponent & 0x8000) ? -1.0 : 1.0, dValue = static_cast<double>(nMantissa);
+    const double dScaler = pow(2.0, static_cast<double>(nExponent & 0x7fff) - 16446);
+    const double dResult = dValue * dScaler * dSign;
+    return dResult;
 }
 
 bool CAIFFInputSource::GetIsBigEndian() const

@@ -114,6 +114,9 @@ public:
 
     // options
     virtual void SetIgnoreReadOnly(bool bIgnoreReadOnly) = 0;
+
+    // output the tag for display
+    virtual int OutputTag(str_utfn * pOutput, int nOutputLength) = 0;
 };
 
 /**************************************************************************************************

@@ -268,7 +268,7 @@ int CAPEHeader::AnalyzeCurrent(APE_FILE_INFO * pInfo)
     pInfo->nSeekTableElements     = static_cast<int>(pInfo->spAPEDescriptor->nSeekTableBytes / 4);
 
     // check for nonsense in nSeekTableElements field
-    if (static_cast<int64>(pInfo->nSeekTableElements) > (pInfo->nAPETotalBytes / 4))
+    if ((pInfo->nAPETotalBytes != APE_FILE_SIZE_UNDEFINED) && (static_cast<int64>(pInfo->nSeekTableElements) > (pInfo->nAPETotalBytes / 4)))
     {
         ASSERT(0);
         return ERROR_INVALID_INPUT_FILE;
@@ -402,7 +402,7 @@ int CAPEHeader::AnalyzeOld(APE_FILE_INFO * pInfo)
         return ERROR_INVALID_INPUT_FILE;
 
     // check for nonsense in nSeekTableElements field
-    if (static_cast<int64>(pInfo->nSeekTableElements) > (pInfo->nAPETotalBytes / 4))
+    if ((pInfo->nAPETotalBytes != APE_FILE_SIZE_UNDEFINED) && (static_cast<int64>(pInfo->nSeekTableElements) > (pInfo->nAPETotalBytes / 4)))
     {
         ASSERT(0);
         return ERROR_INVALID_INPUT_FILE;

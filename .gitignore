@@ -6,8 +6,15 @@
 /aax-sdk/
 /AAX/
 
+# Monkeys Audio SDK
+/MAC_1298_SDK/
+
 # WebUI build output (platform-specific)
 /plugin/ui/public/
+# iPlug2 移植版の WebUI 本番ビルド出力 (vite-plugin-singlefile の単一 index.html)。
+# main.rc が rc コンパイル時に web/index.html を要求するため、ビルド前に
+# `cd webui && npm run build` を実行する必要がある (Synth80 と同方針)。
+/plugin/resources/web/
 
 # Release packages
 /releases/

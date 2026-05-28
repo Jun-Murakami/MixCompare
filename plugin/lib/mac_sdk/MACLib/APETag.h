@@ -151,6 +151,9 @@ public:
     // options
     void SetIgnoreReadOnly(bool bIgnoreReadOnly) APE_OVERRIDE;
 
+    // output the tag for display
+    int OutputTag(str_utfn * pOutput, int nOutputLength) APE_OVERRIDE;
+
     // statics
     static const int s_nID3GenreUndefined = 255;
     static const int s_nID3GenreCount = 148;
@@ -163,6 +166,7 @@ private:
     int WriteBufferToEndOfIO(void * pBuffer, int nBytes);
     int LoadField(const char * pBuffer, int nMaximumBytes, int * pBytes);
     int SortFields();
+    void SafeStringAppend(wchar_t * pDestination, size_t nDestinationSize, const wchar_t * pSource, bool & rbAppend);
     static int CompareFields(const void * pA, const void * pB);
 
     // helper set / get field functions

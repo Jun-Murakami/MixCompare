@@ -17,7 +17,7 @@ PLATFORM_LINUX
 PLATFORM_ANDROID
 **************************************************************************************************/
 #if !defined(PLATFORM_WINDOWS) && !defined(PLATFORM_APPLE) && !defined(PLATFORM_LINUX) && !defined(PLATFORM_ANDROID)
-    #if defined(__ANDROID__)    
+    #if defined(__ANDROID__)
         #define PLATFORM_ANDROID
     #elif defined(__linux__)
         #define PLATFORM_LINUX

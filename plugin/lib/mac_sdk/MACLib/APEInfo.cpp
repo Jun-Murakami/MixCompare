@@ -4,6 +4,7 @@ CAPEInfo:
 **************************************************************************************************/
 #include "All.h"
 #include "APEInfo.h"
+#include "APETag.h"
 #include "IAPEIO.h"
 #include "APEHeader.h"
 #include "GlobalFunctions.h"
@@ -66,6 +67,10 @@ CAPEInfo::CAPEInfo(int * pErrorCode, const str_utfn * pFilename, IAPETag * pTag,
         return;
     }
 
+    // when we open an APE file with unknown size (like from a pipe) we read the whole thing so length and seeking work properly
+    if (m_spIO->GetSize() == APE_FILE_SIZE_UNDEFINED)
+        bReadWholeFile = true;
+
     // flag to read the whole file if specified
     if (bReadWholeFile)
     {
@@ -73,7 +78,7 @@ CAPEInfo::CAPEInfo(int * pErrorCode, const str_utfn * pFilename, IAPETag * pTag,
         const int64 nSize = m_spIO->GetSize();
 
         // only create if we're less than 200 MB
-        if (nSize < (APE_BYTES_IN_MEGABYTE * 200))
+        if ((nSize == APE_FILE_SIZE_UNDEFINED) || (nSize < (APE_BYTES_IN_MEGABYTE * 200)))
         {
             CWholeFileIO * pWholeFile = CreateWholeFileIO(m_spIO, nSize);
             if (pWholeFile != APE_NULL)
@@ -101,10 +106,12 @@ CAPEInfo::CAPEInfo(int * pErrorCode, const str_utfn * pFilename, IAPETag * pTag,
         if (StringIsEqual(pFilename, L"http://", false, 7) ||
             StringIsEqual(pFilename, L"m01p://", false, 7) ||
             StringIsEqual(pFilename, L"https://", false, 8) ||
-            StringIsEqual(pFilename, L"m01ps://", false, 8))
+            StringIsEqual(pFilename, L"m01ps://", false, 8) ||
+            StringIsEqual(pFilename, L"-", false, 1))
         {
             bAnalyzeTagNow = false;
         }
+
         m_spAPETag.Assign(new CAPETag(m_spIO, bAnalyzeTagNow, GetCheckForID3v1()));
     }
     else
@@ -423,12 +430,26 @@ int64 CAPEInfo::GetInfo(IAPEDecompress::APE_DECOMPRESS_FIELDS Field, int64 nPara
             }
             else
             {
-                // APL files have a tag on the APL but not the original file
-                nResult = static_cast<int64>(m_spIO->GetSize() - static_cast<int64>(m_APEFileInfo.nWAVTerminatingBytes) - static_cast<int64>(GetInfo(IAPEDecompress::APE_INFO_SEEK_BYTE, nFrame)));
+                int64 nFileSize = m_spIO->GetSize();
+                if (nFileSize == APE_FILE_SIZE_UNDEFINED)
+                {
+                    // the size isn't usable so get the size from the other header data
+                    // we come here when decoding APE files from a pipe
+                    // the size matched perfect 4/25/2026 between pipe decoding using this branch and not pipe using the code for regular files
+                    int64 nEndOfFile = static_cast<int64>(m_APEFileInfo.nJunkHeaderBytes) + static_cast<int64>(m_APEFileInfo.spAPEDescriptor->nDescriptorBytes) + static_cast<int64>(m_APEFileInfo.spAPEDescriptor->nHeaderBytes) + static_cast<int64>(m_APEFileInfo.spAPEDescriptor->nSeekTableBytes) + static_cast<int64>(m_APEFileInfo.spAPEDescriptor->nHeaderDataBytes);
+                    nEndOfFile += (static_cast<int64>(m_APEFileInfo.spAPEDescriptor->nAPEFrameDataBytesHigh) << 32) + static_cast<int64>(m_APEFileInfo.spAPEDescriptor->nAPEFrameDataBytes) + static_cast<int64>(m_APEFileInfo.spAPEDescriptor->nTerminatingDataBytes);
 
-                // remove the tag (but not for APL files because they have a tag on the APL but not the original data file)
-                if (m_spAPETag->GetIOMatches(m_spIO))
-                    nResult -= static_cast<int64>(m_spAPETag->GetTagBytes());
+                    nResult = nEndOfFile - GetInfo(IAPEDecompress::APE_INFO_SEEK_BYTE, nFrame);
+                }
+                else
+                {
+                    // APL files have a tag on the APL but not the original file
+                    nResult = static_cast<int64>(nFileSize - static_cast<int64>(m_APEFileInfo.nWAVTerminatingBytes) - static_cast<int64>(GetInfo(IAPEDecompress::APE_INFO_SEEK_BYTE, nFrame)));
+
+                    // remove the tag (but not for APL files because they have a tag on the APL but not the original data file)
+                    if (m_spAPETag->GetIOMatches(m_spIO))
+                        nResult -= static_cast<int64>(m_spAPETag->GetTagBytes());
+                }
             }
         }
         break;

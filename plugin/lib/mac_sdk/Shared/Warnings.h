@@ -20,9 +20,14 @@ Warnings
 #pragma warning(disable: 4061)
 #pragma warning(disable: 4458)
 #pragma warning(disable: 4571)
+#pragma warning(disable: 4625)
+#pragma warning(disable: 4626)
 #pragma warning(disable: 4668)
 #pragma warning(disable: 4768)
 #pragma warning(disable: 4917)
+#pragma warning(disable: 5026)
+#pragma warning(disable: 5027)
+#pragma warning(disable: 5029)
 #endif
 
 // Clang warnings

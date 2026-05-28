@@ -1,6 +1,7 @@
 #include "All.h"
 #include "UnBitArrayBase.h"
 #include "APEInfo.h"
+#include "IAPETag.h"
 #include "UnBitArray.h"
 #ifdef APE_BACKWARDS_COMPATIBILITY
     #include "Old/UnBitArrayOld.h"
@@ -17,7 +18,11 @@ const uint32 POWERS_OF_TWO_MINUS_ONE[33] = {0,1,3,7,15,31,63,127,255,511,1023,20
 /**************************************************************************************************
 CreateUnBitArray
 **************************************************************************************************/
+#ifdef APE_BACKWARDS_COMPATIBILITY
 CUnBitArrayBase * CreateUnBitArray(IAPEDecompress * pAPEDecompress, IAPEIO * pIO, intn nVersion)
+#else
+CUnBitArrayBase * CreateUnBitArray(IAPEDecompress *, IAPEIO * pIO, intn nVersion)
+#endif
 {
     // determine the furthest position we should read in the I/O object
     int64 nFurthestReadByte = pIO->GetSize();

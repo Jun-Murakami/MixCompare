@@ -3,6 +3,7 @@
 #include "APEDecompressCore.h"
 #include "APEInfo.h"
 #include "NewPredictor.h"
+#include "Old/NewPredictorOld.h"
 #include "MemoryIO.h"
 
 namespace APE
@@ -147,9 +148,6 @@ int CAPEDecompressCore::InitializeDecompressor()
     if (m_bDecompressorInitialized)
         return ERROR_SUCCESS;
 
-    // update the initialized flag
-    m_bDecompressorInitialized = true;
-
     // check the block align
     if ((m_nBlockAlign <= 0) || (m_nBlockAlign > 256))
         return ERROR_INVALID_INPUT_FILE;
@@ -158,24 +156,39 @@ int CAPEDecompressCore::InitializeDecompressor()
     m_cbFrameBuffer.CreateBuffer(static_cast<uint32>(m_pDecompress->GetInfo(IAPEDecompress::APE_INFO_BLOCKS_PER_FRAME)) * static_cast<uint32>(m_nBlockAlign), static_cast<uint32>(m_nBlockAlign * 64));
 
     // create the predictors
-    const int nChannels = APE_MIN(APE_MAX(static_cast<int>(m_pDecompress->GetInfo(IAPEDecompress::APE_INFO_CHANNELS)), 1), 32);
+    const int nChannels = APE_CAP(static_cast<int>(m_pDecompress->GetInfo(IAPEDecompress::APE_INFO_CHANNELS)), 1, 32);
     const int nCompressionLevel = static_cast<int>(m_pDecompress->GetInfo(IAPEDecompress::APE_INFO_COMPRESSION_LEVEL));
     const int nVersion = static_cast<int>(m_pDecompress->GetInfo(IAPEDecompress::APE_INFO_FILE_VERSION));
     const int nBitsPerSample = static_cast<int>(m_pDecompress->GetInfo(IAPEDecompress::APE_INFO_BITS_PER_SAMPLE));
 
     // loop channels
+    int nResult = ERROR_UNDEFINED;
     for (int nChannel = 0; nChannel < nChannels; nChannel++)
     {
         if (nVersion >= 3950)
+        {
             if (nBitsPerSample < 32)
                 m_aryPredictor[nChannel] = new CPredictorDecompress3950toCurrent<int, short>(nCompressionLevel, nVersion, nBitsPerSample);
             else
                 m_aryPredictor[nChannel] = new CPredictorDecompress3950toCurrent<int64, int>(nCompressionLevel, nVersion, nBitsPerSample);
+
+            nResult = ERROR_SUCCESS;
+        }
+#ifdef APE_BACKWARDS_COMPATIBILITY
         else
-            m_aryPredictor[nChannel] = new CPredictorDecompressNormal3930to3950(nCompressionLevel, nVersion);
+        {
+            m_aryPredictor[nChannel] = new CPredictorDecompress3930to3950(nCompressionLevel, nVersion);
+
+            nResult = ERROR_SUCCESS;
+        }
+#endif
     }
 
-    return ERROR_SUCCESS;
+    // update the initialized flag
+    if (nResult == ERROR_SUCCESS)
+        m_bDecompressorInitialized = true;
+
+    return nResult;
 }
 
 /**************************************************************************************************
@@ -183,10 +196,10 @@ Decodes blocks of data
 **************************************************************************************************/
 int CAPEDecompressCore::DecodeFrame()
 {
-    InitializeDecompressor();
-
-    int nResult = ERROR_SUCCESS;
-
+    // initialize
+    int nResult = InitializeDecompressor();
+    
+    // empty the buffer
     m_cbFrameBuffer.Empty();
 
     // determine the maximum blocks we can decode
@@ -196,9 +209,9 @@ int CAPEDecompressCore::DecodeFrame()
     // but this allows robust error handling of bad frames
     int64 nBlocksLeft = m_nFrameBlocks;
     if (nBlocksLeft <= 0)
-        return ERROR_DECOMPRESSING_FRAME;
+        nResult = ERROR_DECOMPRESSING_FRAME;
 
-    // loop and decode data
+    // loop and decode data (if there's a failure above we won't even enter the loop)
     while ((nBlocksLeft > 0) && (nResult == ERROR_SUCCESS))
     {
         // analyze

@@ -19,6 +19,38 @@
 namespace APE
 {
 
+void EnableHighDPISupport()
+{
+#if defined(PLATFORM_WINDOWS)
+    HMODULE hUser32 = LoadLibrary(_T("user32.dll"));
+    if (hUser32 != APE_NULL)
+    {
+        // turn on high DPI support
+
+        // older operating systems like Vista
+        BOOL(STDAPICALLTYPE * pSetProcessDPIAware) () = APE_NULL;
+        *(reinterpret_cast<FARPROC *>(&pSetProcessDPIAware)) = GetProcAddress(hUser32, "SetProcessDPIAware");
+        if (pSetProcessDPIAware != APE_NULL)
+        {
+            pSetProcessDPIAware();
+        }
+
+        // newer operating systems that support per monitor
+        #if !defined(PLATFORM_WINDOWS_XP)
+            BOOL(STDAPICALLTYPE * pSetProcessDpiAwarenessContext) (IN DPI_AWARENESS_CONTEXT value) = APE_NULL;
+            *(reinterpret_cast<FARPROC *>(&pSetProcessDpiAwarenessContext)) = GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
+            if (pSetProcessDpiAwarenessContext != APE_NULL)
+            {
+                pSetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            }
+        #endif
+
+        // cleanup
+        FreeLibrary(hUser32);
+    }
+#endif
+}
+
 int ReadSafe(IAPEIO * pIO, void * pBuffer, int nBytes)
 {
     unsigned int nBytesRead = 0;

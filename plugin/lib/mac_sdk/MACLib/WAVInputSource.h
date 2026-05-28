@@ -117,8 +117,7 @@ public:
 
 private:
     int AnalyzeSource();
-    unsigned long FetchLong(unsigned long * ptr);
-    double GetExtendedDouble(uint16_t exponent, uint64_t mantissa);
+    double GetExtendedDouble(uint16_t nExponent, uint64_t nMantissa);
 
     // data
     CSmartPtr<IAPEIO> m_spIO;

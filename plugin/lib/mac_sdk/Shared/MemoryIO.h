@@ -34,7 +34,7 @@ public:
     // attributes
     int64 GetPosition() APE_OVERRIDE;
     int64 GetSize() APE_OVERRIDE;
-    
+
 private:
     unsigned char * m_pBuffer;
     int m_nBufferBytes;

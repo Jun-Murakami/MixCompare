@@ -1,57 +1,46 @@
-# MixCompare Windows Release Build Script
-# PowerShell script for building production release with embedded WebUI
+# MixCompare Windows Release Build Script (iPlug2)
+# WebUI 本番ビルド → CMake configure → VST3 / CLAP / Standalone / AAX コンパイル
+# → Authenticode 署名 (Azure Key Vault) / AAX 署名 (PACE Eden) → ZIP 梱包
+# → Inno Setup インストーラ生成。
+#
+# JUCE 版からの移植: ターゲット名は iPlug2 形式 (MixCompare-vst3 等)、成果物は
+# build/out/MixCompare.* に出る。AAX SDK は iPlug2/Dependencies/IPlug/AAX_SDK。
+# 署名資格情報は環境変数 (.env または User env) から読む (シークレットは非ハードコード)。
 
 param(
     [string]$Configuration = "Release",
-    [switch]$SkipCodeSign
+    [switch]$SkipCodeSign,
+    [switch]$SkipWebUI
 )
 
-# Read version from VERSION file
 $ScriptDir = $PSScriptRoot
 if (-not $ScriptDir) { $ScriptDir = (Get-Location).Path }
-$RootDir = $ScriptDir  # Script is now in root
+$RootDir = $ScriptDir
 $VersionFile = "$RootDir\VERSION"
 
 if (Test-Path $VersionFile) {
-    $Version = Get-Content $VersionFile -Raw
-    $Version = $Version.Trim()
+    $Version = (Get-Content $VersionFile -Raw).Trim()
 } else {
     Write-Error "VERSION file not found at: $VersionFile"
     exit 1
 }
 
-# Set error action preference
 $ErrorActionPreference = "Stop"
 
-# Define colors for output
-function Write-Header {
-    param([string]$Text)
+function Write-Header { param([string]$Text)
     Write-Host ""
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host "   $Text" -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ""
 }
+function Write-Step    { param([string]$Text) Write-Host ">> $Text" -ForegroundColor Yellow }
+function Write-Success { param([string]$Text) Write-Host "[OK] $Text" -ForegroundColor Green }
+function Write-Fail    { param([string]$Text) Write-Host "[FAIL] $Text" -ForegroundColor Red }
 
-function Write-Step {
-    param([string]$Text)
-    Write-Host "► $Text" -ForegroundColor Yellow
-}
+Write-Header "MixCompare $Version Build Script (iPlug2)"
 
-function Write-Success {
-    param([string]$Text)
-    Write-Host "✓ $Text" -ForegroundColor Green
-}
-
-function Write-Error {
-    param([string]$Text)
-    Write-Host "✗ $Text" -ForegroundColor Red
-}
-
-# Start build process
-Write-Header "MixCompare $Version Build Script"
-
-# Load .env file if present (KEY=VALUE format, one per line)
+# Load .env (KEY=VALUE)
 $EnvFilePath = "$RootDir\.env"
 if (Test-Path $EnvFilePath) {
     Write-Host "Loading environment variables from .env ..." -ForegroundColor Gray
@@ -71,13 +60,12 @@ if (Test-Path $EnvFilePath) {
 }
 
 # ----------------------------------------------------------------------------
-# Windows Authenticode code signing (Azure Key Vault via azuresigntool)
+# Windows Authenticode 署名 (Azure Key Vault 経由の azuresigntool)
 # ----------------------------------------------------------------------------
-# Signs distributable PE files (VST3 DLL / Standalone exe / Inno Setup installer)
-# with the Azure Key Vault certificate. Auth uses -kvm (DefaultAzureCredential):
-# AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_CLIENT_SECRET (User env or .env), or
-# an az login session. No secrets are stored here. AAX is signed by PACE wraptool
-# (Step 3) since it cannot be re-signed afterwards without breaking the wrap.
+# 配布する PE (VST3 本体 DLL / CLAP / Standalone exe / インストーラ) を Azure Key
+# Vault の証明書で署名する。認証は -kvm (DefaultAzureCredential): 環境変数
+# AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_CLIENT_SECRET、または az login セッション。
+# AAX は PACE Eden wraptool が wrap と一体で署名する (後追い署名は HashMismatch)。
 $AzureKeyVaultUrl = if ($env:AZURE_KEYVAULT_URL) { $env:AZURE_KEYVAULT_URL } else { 'https://jun-codesign-kv.vault.azure.net/' }
 $AzureCertName    = if ($env:AZURE_CERT_NAME)    { $env:AZURE_CERT_NAME }    else { 'jun-codesigning-2026' }
 $TimestampUrl     = if ($env:CODESIGN_TIMESTAMP_URL) { $env:CODESIGN_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }
@@ -129,266 +117,228 @@ function Invoke-AuthenticodeSign {
     }
 }
 
-# Get build date
 $BuildDate = Get-Date -Format "yyyy-MM-dd"
+$WebUIDir   = "$RootDir\webui"
+$BuildDir   = "$RootDir\build"
+$OutputDir  = "$RootDir\releases\$Version"
 
-# Directory settings (use script directory as root)
-$RootDir = $ScriptDir
-$WebUIDir = "$RootDir\webui"
-$BuildDir = "$RootDir\build"
-$OutputDir = "$RootDir\releases\$Version"
-$AAXSDKPath = "$RootDir\aax-sdk"
+# ----------------------------------------------------------------------------
+# AAX SDK: iPlug2 は iPlug2/Dependencies/IPlug/AAX_SDK 固定で参照する
+# (AAX.cmake にパスがハードコードされている)。リポジトリ同梱の aax-sdk/ が
+# あればそこへコピーしておく (= JUCE 版は $RootDir\aax-sdk を直接使っていた)。
+# ----------------------------------------------------------------------------
+$AAXSDKPath = "$RootDir\iPlug2\Dependencies\IPlug\AAX_SDK"
+$AAXSourceDir = "$RootDir\aax-sdk"
+if (-not (Test-Path "$AAXSDKPath\Interfaces\AAX.h") -and (Test-Path "$AAXSourceDir\Interfaces\AAX.h")) {
+    Write-Step "Copying aax-sdk into iPlug2/Dependencies/IPlug/AAX_SDK ..."
+    New-Item -ItemType Directory -Force -Path $AAXSDKPath | Out-Null
+    Copy-Item -Path (Join-Path $AAXSourceDir '*') -Destination $AAXSDKPath -Recurse -Force
+    Write-Success "AAX SDK staged"
+}
 
-# Check for AAX SDK
 Write-Step "Checking AAX SDK..."
 if (Test-Path "$AAXSDKPath\Interfaces\AAX.h") {
     Write-Success "AAX SDK found - AAX will be built"
     $BuildAAX = $true
-    
-    # Build AAX Library if not already built or if it's outdated
-    Write-Step "Building AAX Library..."
-    $AAXLibraryPath = "$AAXSDKPath\Libs\Release\AAXLibrary.lib"
-    $AAXLibraryBuildDir = "$AAXSDKPath\Libs\AAXLibrary\build"
-    
-    # Always rebuild AAX library to ensure it matches current configuration
-    if (Test-Path $AAXLibraryBuildDir) {
-        Write-Host "  Cleaning previous AAX Library build..." -ForegroundColor Gray
-        Remove-Item -Path $AAXLibraryBuildDir -Recurse -Force
+
+    # iPlug2 同梱の AAX SDK は古い cmake_minimum_required + ソースツリーを指す PUBLIC
+    # include path を持ち、CMake 4.x が INTERFACE_INCLUDE_DIRECTORIES のツリー内パスを
+    # 拒否する。PUBLIC の 2 行を $<BUILD_INTERFACE:...> でラップする。
+    $AaxLibCMake = "$AAXSDKPath\Libs\AAXLibrary\CMakeLists.txt"
+    if ((Test-Path $AaxLibCMake) -and -not (Select-String -Path $AaxLibCMake -SimpleMatch -Pattern 'BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../Interfaces' -Quiet)) {
+        Write-Step "Patching AAX SDK CMakeLists.txt for CMake 4.x compatibility..."
+        $content = Get-Content -Path $AaxLibCMake -Raw
+        $content = $content -replace '(?m)^    \$\{CMAKE_CURRENT_SOURCE_DIR\}/\.\./\.\./Interfaces$', '    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../Interfaces>'
+        $content = $content -replace '(?m)^    \$\{CMAKE_CURRENT_SOURCE_DIR\}/\.\./\.\./Interfaces/ACF$', '    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../Interfaces/ACF>'
+        Set-Content -Path $AaxLibCMake -Value $content -NoNewline
+        Write-Success "AAX SDK patched"
     }
-    
-    New-Item -ItemType Directory -Force -Path $AAXLibraryBuildDir | Out-Null
-    Set-Location $AAXLibraryBuildDir
-    
-    Write-Host "  Configuring AAX Library with CMake..." -ForegroundColor Gray
-    cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to configure AAX Library"
-        exit 1
-    }
-    
-    Write-Host "  Building AAX Library (Release)..." -ForegroundColor Gray
-    cmake --build . --config Release --parallel 8
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to build AAX Library"
-        exit 1
-    }
-    
-    # Copy library to expected location
-    $BuiltLibPath = "$AAXLibraryBuildDir\Release\AAXLibrary.lib"
-    if (Test-Path $BuiltLibPath) {
-        New-Item -ItemType Directory -Force -Path "$AAXSDKPath\Libs\Release" | Out-Null
-        Copy-Item -Path $BuiltLibPath -Destination $AAXLibraryPath -Force
-        Write-Success "AAX Library built successfully"
-    } else {
-        Write-Error "AAX Library build output not found"
-        exit 1
-    }
-    
-    Set-Location $RootDir
 } else {
     Write-Host "AAX SDK not found at: $AAXSDKPath - AAX will be skipped" -ForegroundColor Yellow
     $BuildAAX = $false
 }
 
-# Create output directories
 Write-Step "Creating output directories..."
 New-Item -ItemType Directory -Force -Path "$OutputDir\Windows" | Out-Null
 Write-Success "Output directories created"
 
-# Step 1: Build WebUI for production
+# ----------------------------------------------------------------------------
+# Step 1: WebUI production build (→ plugin/resources/web、main.rc が RCDATA 埋め込み)
+# ----------------------------------------------------------------------------
 Write-Header "Step 1: Building WebUI for production"
 
-# Clean up previous build output
-$UIPublicDir = "$RootDir\plugin\ui\public"
-if (Test-Path $UIPublicDir) {
-    Write-Step "Cleaning previous WebUI build..."
-    Remove-Item -Path $UIPublicDir -Recurse -Force
-    Write-Success "Previous build cleaned"
-}
+$WebOutDir = "$RootDir\plugin\resources\web"
+if ($SkipWebUI) {
+    Write-Step "Skipping WebUI build (-SkipWebUI)"
+    if (-not (Test-Path "$WebOutDir\index.html")) {
+        Write-Fail "-SkipWebUI set but no existing WebUI build at $WebOutDir"
+        exit 1
+    }
+} else {
+    if (Test-Path $WebOutDir) {
+        Write-Step "Cleaning previous WebUI build..."
+        Remove-Item -Path $WebOutDir -Recurse -Force
+        Write-Success "Previous build cleaned"
+    }
 
-Set-Location $WebUIDir
+    Set-Location $WebUIDir
+    if (-not (Test-Path "node_modules")) {
+        Write-Step "Installing npm dependencies..."
+        npm install
+        if ($LASTEXITCODE -ne 0) { Write-Fail "npm install failed"; exit 1 }
+    }
 
-# Check if node_modules exists
-if (-not (Test-Path "node_modules")) {
-    Write-Step "Installing npm dependencies..."
-    npm install
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to install npm dependencies"
+    Write-Step "Building WebUI..."
+    npm run build
+    if ($LASTEXITCODE -ne 0) { Write-Fail "WebUI build failed"; exit 1 }
+    Write-Success "WebUI built successfully"
+
+    if (-not (Test-Path "$WebOutDir\index.html")) {
+        Write-Fail "WebUI build output not found at $WebOutDir"
         exit 1
     }
 }
 
-# Build WebUI
-Write-Step "Building WebUI..."
-npm run build
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "WebUI build failed"
-    exit 1
-}
-
-Write-Success "WebUI built successfully"
-Write-Host "Output: $RootDir\plugin\ui\public" -ForegroundColor Gray
-
-# Verify WebUI build output
-if (-not (Test-Path "$RootDir\plugin\ui\public\index.html")) {
-    Write-Error "WebUI build output not found!"
-    exit 1
-}
-
-# Step 2: Build VST3, Standalone, and AAX (if SDK available) with embedded WebUI
+# ----------------------------------------------------------------------------
+# Step 2: Native plugin build (VST3 / CLAP / Standalone / AAX)
+# ----------------------------------------------------------------------------
 if ($BuildAAX) {
-    Write-Header "Step 2: Building VST3, Standalone, and AAX"
+    Write-Header "Step 2: Building VST3, CLAP, Standalone, and AAX"
 } else {
-    Write-Header "Step 2: Building VST3 and Standalone"
+    Write-Header "Step 2: Building VST3, CLAP, and Standalone"
 }
 
-Set-Location $BuildDir
+Set-Location $RootDir
+if (-not (Test-Path $BuildDir)) {
+    New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+}
 
-# Configure CMake for Release build
+# 既存 build/ が別 generator/platform（例: 過去の Ninja や platform 未指定）で
+# configure 済みだと "generator platform: x64 / Does not match ..." で落ちる。
+# 目的の generator+platform と一致しないキャッシュは安全側で除去してから configure する。
+$CacheFile = Join-Path $BuildDir "CMakeCache.txt"
+if (Test-Path $CacheFile) {
+    $cache = Get-Content $CacheFile -Raw
+    $genOk  = $cache -match '(?m)^CMAKE_GENERATOR:.*Visual Studio 17 2022'
+    $platOk = $cache -match '(?m)^CMAKE_GENERATOR_PLATFORM:[^=]*=x64'
+    if (-not ($genOk -and $platOk)) {
+        Write-Step "Existing CMake cache uses a different generator/platform - clearing it..."
+        Remove-Item -Path $CacheFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $BuildDir "CMakeFiles") -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Success "Stale CMake cache cleared"
+    }
+}
+
 Write-Step "Configuring CMake for $Configuration build..."
-cmake -DCMAKE_BUILD_TYPE=$Configuration ..
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "CMake configuration failed"
-    exit 1
-}
+cmake -S $RootDir -B $BuildDir -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=$Configuration
+if ($LASTEXITCODE -ne 0) { Write-Fail "CMake configuration failed"; exit 1 }
 
-# Build VST3
-Write-Step "Building VST3 plugin..."
-cmake --build . --config $Configuration --target MixCompare_VST3
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "VST3 build failed"
-    exit 1
-}
-
+Write-Step "Building VST3..."
+cmake --build $BuildDir --config $Configuration --target MixCompare-vst3
+if ($LASTEXITCODE -ne 0) { Write-Fail "VST3 build failed"; exit 1 }
 Write-Success "VST3 built successfully"
 
-# Build Standalone
-Write-Step "Building Standalone application..."
-cmake --build . --config $Configuration --target MixCompare_Standalone
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Standalone build failed"
-    exit 1
-}
+Write-Step "Building CLAP..."
+cmake --build $BuildDir --config $Configuration --target MixCompare-clap
+if ($LASTEXITCODE -ne 0) { Write-Fail "CLAP build failed"; exit 1 }
+Write-Success "CLAP built successfully"
 
+Write-Step "Building Standalone..."
+cmake --build $BuildDir --config $Configuration --target MixCompare-app
+if ($LASTEXITCODE -ne 0) { Write-Fail "Standalone build failed"; exit 1 }
 Write-Success "Standalone built successfully"
 
-# Build AAX if SDK is available
 if ($BuildAAX) {
-    Write-Step "Building AAX plugin..."
-    cmake --build . --config $Configuration --target MixCompare_AAX
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "AAX build failed"
-        exit 1
-    }
+    Write-Step "Building AAX..."
+    cmake --build $BuildDir --config $Configuration --target MixCompare-aax
+    if ($LASTEXITCODE -ne 0) { Write-Fail "AAX build failed"; exit 1 }
     Write-Success "AAX built successfully"
 }
 
-# Step 3: Packaging for distribution
+# ----------------------------------------------------------------------------
+# Step 3: Packaging
+# ----------------------------------------------------------------------------
 Write-Header "Step 3: Packaging for distribution"
 
-# Copy VST3 files
-Write-Step "Copying VST3 files..."
-$SourceVST3 = "$BuildDir\plugin\MixCompare_artefacts\$Configuration\VST3\MixCompare.vst3"
-$DestVST3 = "$OutputDir\Windows\MixCompare.vst3"
+# iPlug2 は全成果物を $BuildDir\out\MixCompare.* に出力する (RUNTIME_OUTPUT_DIRECTORY)。
+$SrcVST3       = "$BuildDir\out\MixCompare.vst3"
+$SrcCLAP       = "$BuildDir\out\MixCompare.clap"
+$SrcStandalone = "$BuildDir\out\MixCompare.exe"
+$SrcAAX        = "$BuildDir\out\MixCompare.aaxplugin"
 
-if (Test-Path $SourceVST3) {
-    # 既存の VST3 バンドルがある場合は削除してからコピーする。
-    # PowerShell の Copy-Item は、宛先フォルダが既に存在すると
-    # SourceDir を DestDir\(SourceDir名) として入れ子にしてしまうため、
-    # 二重フォルダ生成を避ける。
-    if (Test-Path $DestVST3) {
-        Remove-Item -Path $DestVST3 -Recurse -Force
-    }
-    Copy-Item -Path $SourceVST3 -Destination $DestVST3 -Recurse -Force
-    Write-Success "VST3 copied successfully"
-} else {
-    Write-Error "VST3 build output not found at: $SourceVST3"
-    exit 1
-}
-
-# Copy Standalone files
-Write-Step "Copying Standalone files..."
-$SourceStandalone = "$BuildDir\plugin\MixCompare_artefacts\$Configuration\Standalone\MixCompare.exe"
+$DestVST3       = "$OutputDir\Windows\MixCompare.vst3"
+$DestCLAP       = "$OutputDir\Windows\MixCompare.clap"
 $DestStandalone = "$OutputDir\Windows\MixCompare.exe"
+$DestAAX        = "$OutputDir\Windows\MixCompare.aaxplugin"
 
-if (Test-Path $SourceStandalone) {
-    # 既存の EXE がある場合は削除してからコピーする（上書き時のロック/属性問題回避）。
-    if (Test-Path $DestStandalone) {
-        Remove-Item -Path $DestStandalone -Force
-    }
-    Copy-Item -Path $SourceStandalone -Destination $DestStandalone -Force
-    Write-Success "Standalone copied successfully"
+Write-Step "Copying VST3..."
+if (Test-Path $SrcVST3) {
+    if (Test-Path $DestVST3) { Remove-Item -Path $DestVST3 -Recurse -Force }
+    Copy-Item -Path $SrcVST3 -Destination $DestVST3 -Recurse -Force
+    Write-Success "VST3 copied"
 } else {
-    Write-Error "Standalone build output not found at: $SourceStandalone"
+    Write-Fail "VST3 not found at: $SrcVST3"
     exit 1
 }
 
-# Copy and Sign AAX files if built
+Write-Step "Copying CLAP..."
+if (Test-Path $SrcCLAP) {
+    if (Test-Path $DestCLAP) { Remove-Item -Path $DestCLAP -Force }
+    Copy-Item -Path $SrcCLAP -Destination $DestCLAP -Force
+    Write-Success "CLAP copied"
+} else {
+    Write-Fail "CLAP not found at: $SrcCLAP"
+    exit 1
+}
+
+Write-Step "Copying Standalone..."
+if (Test-Path $SrcStandalone) {
+    if (Test-Path $DestStandalone) { Remove-Item -Path $DestStandalone -Force }
+    Copy-Item -Path $SrcStandalone -Destination $DestStandalone -Force
+    Write-Success "Standalone copied"
+} else {
+    Write-Fail "Standalone not found at: $SrcStandalone"
+    exit 1
+}
+
+# AAX copy + PACE signing (iLok)
 $AAXSignedSuccessfully = $false
 $AAXSigningStatus = "unsigned_developer"
 
 if ($BuildAAX) {
-    Write-Step "Processing AAX plugin..."
-    $SourceAAX = "$BuildDir\plugin\MixCompare_artefacts\$Configuration\AAX\MixCompare.aaxplugin"
-    $DestAAX = "$OutputDir\Windows\MixCompare.aaxplugin"
-    
-    if (Test-Path $SourceAAX) {
-        # 既存の AAX バンドルがある場合は削除してからコピーする。
-        # これを行わないと、Copy-Item が入れ子の
-        # MixCompare.aaxplugin\MixCompare.aaxplugin\... を作ってしまう。
-        if (Test-Path $DestAAX) {
-            Remove-Item -Path $DestAAX -Recurse -Force
-        }
-        # まず宛先ディレクトリを作成し、"中身のみ" をコピーする（フォルダごとでなく、ネスト回避）。
+    Write-Step "Copying AAX..."
+    if (Test-Path $SrcAAX) {
+        if (Test-Path $DestAAX) { Remove-Item -Path $DestAAX -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $DestAAX | Out-Null
-        Copy-Item -Path (Join-Path $SourceAAX '*') -Destination $DestAAX -Recurse -Force
-        Write-Success "AAX copied successfully (unsigned)"
+        Copy-Item -Path (Join-Path $SrcAAX '*') -Destination $DestAAX -Recurse -Force
+        Write-Success "AAX copied (unsigned)"
 
-        # AAX バンドルの中身が空でないかを検証（少なくとも本体バイナリが存在するか）
-        $AAXBinary = Join-Path $DestAAX "Contents\x64\MixCompare.aaxplugin"
-        if (-not (Test-Path $AAXBinary)) {
-            Write-Host "Warning: AAX bundle binary not found at: $AAXBinary" -ForegroundColor Yellow
-            Write-Host "Attempting to re-copy from build artefacts..." -ForegroundColor Yellow
-
-            # 再コピー前に確実に削除
-            if (Test-Path $DestAAX) {
-                Remove-Item -Path $DestAAX -Recurse -Force
-            }
-            Copy-Item -Path $SourceAAX -Destination $DestAAX -Recurse -Force
-
-            if (-not (Test-Path $AAXBinary)) {
-                Write-Error "AAX bundle appears empty after copy. Source may be invalid: $SourceAAX"
-                exit 1
-            }
-        }
-        
-        # Sign AAX plugin
-        Write-Step "Signing AAX plugin with PACE Eden tools..."
+        Write-Step "Signing AAX with PACE Eden tools..."
         $WrapToolPath = "C:\Program Files (x86)\PACEAntiPiracy\Eden\Fusion\Versions\5\wraptool.exe"
 
         if (-not (Test-Path $WrapToolPath)) {
-            Write-Host "Warning: PACE Eden wraptool not found. AAX plugin will remain unsigned." -ForegroundColor Yellow
-            Write-Host "Expected path: $WrapToolPath" -ForegroundColor Yellow
+            Write-Host "Warning: PACE Eden wraptool not found at $WrapToolPath" -ForegroundColor Yellow
             $AAXSigningStatus = "wraptool_missing"
         } else {
             $PaceVars = @("PACE_USERNAME", "PACE_PASSWORD", "PACE_ORGANIZATION")
             $MissingVars = @($PaceVars | Where-Object { -not (Get-Item "env:$_" -ErrorAction SilentlyContinue) })
+
             if ($MissingVars.Count -gt 0) {
-                Write-Warning "Missing PACE env vars: $($MissingVars -join ', ')"
+                Write-Host "Missing PACE env vars: $($MissingVars -join ', ')" -ForegroundColor Yellow
                 $AAXSigningStatus = "credentials_missing"
             } else {
-                # --signtool path requires PACE_FUSION_HOME (= wraptool.exe directory).
+                # --signtool 経路では PACE_FUSION_HOME (= wraptool.exe のディレクトリ) が必須。
                 $env:PACE_FUSION_HOME = Split-Path $WrapToolPath -Parent
 
-                # Authenticode-sign with the Azure KV certificate via azuresigntool.
-                # Code-signing keys are non-exportable (CA/B 2023-06), so there is no
-                # .pfx and wraptool's --keyfile cannot be used. Instead --signtool
-                # points at aax-signtool.bat which runs azuresigntool as the final
-                # step of the wrap flow (re-signing after wrap would HashMismatch).
+                # Authenticode は azuresigntool で Azure KV の正規証明書を使う。CA/B 2023-06
+                # 以降コード署名鍵は非エクスポート (HSM/KV) で .pfx を作れないため、wraptool の
+                # --keyfile ではなく --signtool に aax-signtool.bat を渡し wrap の最終工程で KV
+                # 署名させる (aax-signtool.bat は CODESIGN_* 環境変数を読む)。
                 $AaxWrapper = "$RootDir\aax-signtool.bat"
                 $HaveAst = [bool](Get-Command azuresigntool -ErrorAction SilentlyContinue)
+
                 $SigningArgs = $null
-                $SignMethod = ""
+                $SignMethod  = ""
                 if (-not $SkipCodeSign -and $HaveAst -and (Test-Path $AaxWrapper)) {
                     $env:CODESIGN_KVU = $AzureKeyVaultUrl
                     $env:CODESIGN_KVC = $AzureCertName
@@ -405,12 +355,13 @@ if ($BuildAAX) {
                     )
                     $SignMethod = "Azure Key Vault ($AzureCertName)"
                 } else {
-                    # Fallback: dev pfx (Pro Tools works, Authenticode root NOT trusted).
-                    # Used with -SkipCodeSign or when azuresigntool / wrapper is absent.
-                    $DevPfxName = ([IO.Path]::GetFileNameWithoutExtension($DestVST3)).ToLower() + "-dev.pfx"
-                    $PfxCandidates = @($env:PACE_PFX_PATH, "$RootDir\$DevPfxName")
+                    # フォールバック: dev pfx で PACE + Authenticode 署名 (Pro Tools 動作には十分だが
+                    # Authenticode ルートは未信頼)。-SkipCodeSign / azuresigntool 未検出時。
+                    $PfxCandidates = @($env:PACE_PFX_PATH, "$RootDir\mixcompare-dev.pfx", "$env:USERPROFILE\.mixcompare\dev.pfx")
                     $PfxPath = $null
-                    foreach ($candidate in $PfxCandidates) { if ($candidate -and (Test-Path $candidate)) { $PfxPath = $candidate; break } }
+                    foreach ($candidate in $PfxCandidates) {
+                        if ($candidate -and (Test-Path $candidate)) { $PfxPath = $candidate; break }
+                    }
                     if (-not $PfxPath -or -not (Get-Item "env:PACE_KEYPASSWORD" -ErrorAction SilentlyContinue)) {
                         Write-Host "Warning: Azure signing unavailable and no usable dev pfx/PACE_KEYPASSWORD - AAX left unsigned" -ForegroundColor Yellow
                         $AAXSigningStatus = "certificate_missing"
@@ -430,12 +381,13 @@ if ($BuildAAX) {
                 }
 
                 if ($SigningArgs) {
-                    Write-Host "  AAX signing method: $SignMethod" -ForegroundColor Gray
+                    Write-Step "AAX signing method: $SignMethod"
                     $SigningOutput = & $WrapToolPath $SigningArgs 2>&1
                     $SigningExitCode = $LASTEXITCODE
                     $SigningOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+
                     if ($SigningExitCode -eq 0) {
-                        Write-Success "AAX plugin signed successfully ($SignMethod)"
+                        Write-Success "AAX signed successfully ($SignMethod)"
                         $AAXSignedSuccessfully = $true
                         $AAXSigningStatus = if ($SignMethod -like 'Azure*') { "signed_kv" } else { "signed_devcert" }
                     } else {
@@ -446,22 +398,21 @@ if ($BuildAAX) {
             }
         }
     } else {
-        Write-Error "AAX build output not found at: $SourceAAX"
+        Write-Fail "AAX not found at: $SrcAAX"
         exit 1
     }
 }
 
 # ----------------------------------------------------------------------------
-# Step 3.5: Authenticode signing (VST3 DLL + Standalone exe)
+# Step 3.5: Authenticode signing (VST3 DLL + CLAP + Standalone exe)
 # ----------------------------------------------------------------------------
-# Sign before ZIP/installer so distributables embed signed binaries. AAX is
-# handled by PACE wraptool in Step 3 (not signed here - re-signing a wrapped
-# binary externally would HashMismatch).
+# ZIP / インストーラより前に署名し、配布物が署名済みバイナリを含むようにする。
+# AAX はここでは署名しない (Step 3 の PACE wrap で一体署名済み)。
 Write-Header "Step 3.5: Signing Windows binaries (Authenticode)"
-$Vst3InnerPE = Join-Path $DestVST3 ("Contents\x86_64-win\" + [IO.Path]::GetFileNameWithoutExtension($DestVST3) + ".vst3")
-Invoke-AuthenticodeSign -Paths @($Vst3InnerPE, $DestStandalone) | Out-Null
+$VST3InnerPE = Join-Path $DestVST3 "Contents\x86_64-win\MixCompare.vst3"
+Invoke-AuthenticodeSign -Paths @($VST3InnerPE, $DestCLAP, $DestStandalone) | Out-Null
 
-# Create README
+# ReadMe
 Write-Step "Creating documentation..."
 $ReadmeContent = @"
 MixCompare $Version - Windows Installation Guide
@@ -470,7 +421,7 @@ MixCompare $Version - Windows Installation Guide
 Important: Required Software
 -------------------
 This plugin requires the Microsoft Visual C++ 2019 Redistributable Package.
-If the plugin fails to load, please download and install it from the following link:
+If the plugin fails to load, install it from:
 https://aka.ms/vs/17/release/vc_redist.x64.exe
 
 Installation Steps
@@ -478,54 +429,49 @@ Installation Steps
 1. Close your DAW before proceeding.
 
 2. For VST3 Plugin:
-   Copy the entire MixCompare.vst3 folder to the following location:
+   Copy MixCompare.vst3 to:
    C:\Program Files\Common Files\VST3\
 
-3. For Standalone Application:
-   Copy MixCompare.exe to any preferred location, for example:
-   C:\Program Files\MixCompare\ or your Desktop.
+3. For CLAP Plugin:
+   Copy MixCompare.clap to:
+   C:\Program Files\Common Files\CLAP\
 
+4. For Standalone Application:
+   Copy MixCompare.exe to any preferred location.
 "@
 
 if ($BuildAAX) {
     $ReadmeContent += @"
 
-4. For AAX Plugin (Pro Tools):
-   Copy the entire MixCompare.aaxplugin folder to the following location:
-   C:\Program Files\Common Files\Avid\Audio\Plug-Ins\
 
+5. For AAX Plugin (Pro Tools):
+   Copy MixCompare.aaxplugin to:
+   C:\Program Files\Common Files\Avid\Audio\Plug-Ins\
 "@
 }
 
 $ReadmeContent += @"
 
-5. If Windows Defender SmartScreen appears:
-   Click "More info"
-   Then click "Run anyway"
 
-6. Launch your DAW and rescan for plugins.
+Launch your DAW and rescan plugins.
 "@
 
 $ReadmeContent | Out-File -FilePath "$OutputDir\Windows\ReadMe.txt" -Encoding UTF8
 Write-Success "Documentation created"
 
-# Create version.json
-Write-Step "Creating version information..."
-# Build formats list
-$formats = @("VST3", "Standalone")
-if ($BuildAAX) {
-    $formats += "AAX"
-}
+# version.json
+$formats = @("VST3", "CLAP", "Standalone")
+if ($BuildAAX) { $formats += "AAX" }
 
 $VersionInfo = @{
-    name = "MixCompare"
-    version = $Version
-    build_date = $BuildDate
-    platform = "Windows"
+    name        = "MixCompare"
+    version     = $Version
+    build_date  = $BuildDate
+    platform    = "Windows"
     architecture = "x64"
-    formats = $formats
-    webui = "embedded"
-    build_type = $Configuration
+    formats     = $formats
+    webui       = "embedded"
+    build_type  = $Configuration
     aax_signing = if ($BuildAAX) { $AAXSigningStatus } else { "N/A" }
     code_signing = $CodeSigningStatus
 } | ConvertTo-Json
@@ -533,123 +479,70 @@ $VersionInfo = @{
 $VersionInfo | Out-File -FilePath "$OutputDir\Windows\version.json" -Encoding UTF8
 Write-Success "Version info created"
 
-# Step 4: Create Installer with Inno Setup
-Write-Header "Step 4: Creating installer with Inno Setup"
-
-$InnoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if (-not (Test-Path $InnoSetupPath)) {
-    # Try alternative path
-    $InnoSetupPath = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-}
-
-if (Test-Path $InnoSetupPath) {
-    Write-Step "Building installer with Inno Setup..."
-    
-    # Create installer script with version
-    $InstallerScript = "$RootDir\installer.iss"
-    if (Test-Path $InstallerScript) {
-        # Run Inno Setup compiler
-        & $InnoSetupPath /DMyAppVersion="$Version" /Q $InstallerScript
-        
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Installer created successfully"
-            $InstallerPath = "$OutputDir\MixCompare_${Version}_Windows_Setup.exe"
-            Invoke-AuthenticodeSign -Paths @($InstallerPath) | Out-Null
-            if (Test-Path $InstallerPath) {
-                $InstallerInfo = Get-Item $InstallerPath
-                $InstallerSizeMB = [math]::Round($InstallerInfo.Length / 1MB, 2)
-                Write-Host "Installer: $InstallerPath ($InstallerSizeMB MB)" -ForegroundColor Green
-            }
-        } else {
-            Write-Host "Warning: Installer creation failed. Error code: $LASTEXITCODE" -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "Warning: Installer script not found at: $InstallerScript" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "Warning: Inno Setup not found. Skipping installer creation." -ForegroundColor Yellow
-    Write-Host "Download from: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
-}
-
-# Create ZIP archive (as backup or alternative distribution)
+# ZIP archive
 Write-Step "Creating ZIP archive..."
 if ($BuildAAX) {
-    $ZipName = "MixCompare_${Version}_Windows_VST3_AAX_Standalone.zip"
+    $ZipName = "MixCompare_${Version}_Windows_VST3_CLAP_AAX_Standalone.zip"
 } else {
-    $ZipName = "MixCompare_${Version}_Windows_VST3_Standalone.zip"
+    $ZipName = "MixCompare_${Version}_Windows_VST3_CLAP_Standalone.zip"
 }
 $ZipPath = "$OutputDir\$ZipName"
 
-# Remove old ZIP if exists
-if (Test-Path $ZipPath) {
-    Remove-Item $ZipPath -Force
-}
+if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
-# Bundle LICENSE in the distribution ZIP (AGPL-3.0-or-later requires the license to ship with the binary)
+# AGPL-3.0-or-later: バイナリ配布にライセンスを同梱する。
 if (Test-Path "$RootDir\LICENSE") {
     Copy-Item -Path "$RootDir\LICENSE" -Destination "$OutputDir\Windows\LICENSE.txt" -Force
 }
 
-# Create ZIP using Compress-Archive
 Compress-Archive -Path "$OutputDir\Windows\*" -DestinationPath $ZipPath -CompressionLevel Optimal
 Write-Success "ZIP archive created"
 
-# Get file size
+# ----------------------------------------------------------------------------
+# Step 4: Inno Setup installer (optional)
+# ----------------------------------------------------------------------------
+Write-Header "Step 4: Creating installer with Inno Setup"
+
+$InnoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+$InstallerScript = "$RootDir\installer.iss"
+
+if (Test-Path $InnoSetupPath) {
+    if (Test-Path $InstallerScript) {
+        Write-Step "Building installer with Inno Setup..."
+        & $InnoSetupPath /DMyAppVersion="$Version" /Q $InstallerScript
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Installer created successfully"
+            $InstallerExe = "$OutputDir\MixCompare_${Version}_Windows_Setup.exe"
+            Invoke-AuthenticodeSign -Paths @($InstallerExe) | Out-Null
+        } else {
+            Write-Host "Warning: Installer creation failed (exit $LASTEXITCODE)" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Warning: installer.iss not found - skipping installer creation" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Warning: Inno Setup not found - skipping installer creation" -ForegroundColor Yellow
+}
+
+# Final summary
 $FileInfo = Get-Item $ZipPath
 $SizeMB = [math]::Round($FileInfo.Length / 1MB, 2)
 
-# Final summary
 Write-Header "Build completed successfully!"
-
 Write-Host "Package: $ZipPath" -ForegroundColor White
-Write-Host "Size: $SizeMB MB" -ForegroundColor White
+Write-Host "Size:    $SizeMB MB" -ForegroundColor White
 Write-Host ""
 if ($CodeSigningStatus -eq "signed") {
-    Write-Host "[OK] VST3 / Standalone / Installer signed via Azure Key Vault" -ForegroundColor Green
+    Write-Host "[OK]  VST3 / CLAP / Standalone / Installer signed via Azure Key Vault" -ForegroundColor Green
 } else {
-    Write-Host "[!] Authenticode signing status: $CodeSigningStatus" -ForegroundColor Yellow
+    Write-Host "[!!]  Authenticode signing: $CodeSigningStatus" -ForegroundColor Yellow
 }
-Write-Host ""
 if ($BuildAAX) {
-    $AAXSigningStatusSummary = switch ($AAXSigningStatus) {
-        "signed" { "PACE-signed build" }
-        "certificate_missing" { "certificate missing" }
-        "credentials_missing" { "missing signing credentials" }
-        "signing_failed" { "signing command failed" }
-        "wraptool_missing" { "wraptool not installed" }
-        "signing_skipped" { "signing skipped manually" }
-        Default { "unsigned developer build" }
-    }
-}
-Write-Host "The package includes:" -ForegroundColor Cyan
-Write-Host "[✓] MixCompare.vst3 (with embedded WebUI)" -ForegroundColor Green
-Write-Host "[✓] MixCompare.exe (Standalone application)" -ForegroundColor Green
-if ($BuildAAX) {
-    Write-Host "[✓] MixCompare.aaxplugin ($AAXSigningStatusSummary)" -ForegroundColor Green
-}
-Write-Host "[✓] Installation instructions" -ForegroundColor Green
-Write-Host "[✓] Version information" -ForegroundColor Green
-Write-Host ""
-Write-Host "Distribution checklist:" -ForegroundColor Cyan
-Write-Host "[✓] WebUI built and embedded" -ForegroundColor Green
-if ($BuildAAX) {
-    Write-Host "[✓] VST3, Standalone, and AAX compiled in $Configuration mode" -ForegroundColor Green
-} else {
-    Write-Host "[✓] VST3 and Standalone compiled in $Configuration mode" -ForegroundColor Green
-}
-if (Test-Path "$OutputDir\MixCompare_${Version}_Windows_Setup.exe") {
-    Write-Host "[✓] Installer created with Inno Setup" -ForegroundColor Green
-}
-Write-Host "[✓] Installation guide included" -ForegroundColor Green
-Write-Host "[✓] Version info included" -ForegroundColor Green
-if ($BuildAAX) {
-    if ($AAXSignedSuccessfully) {
-        Write-Host "[✓] AAX plugin signed with PACE Eden tools" -ForegroundColor Green
+    if ($AAXSigningStatus -eq "signed_kv") {
+        Write-Host "[OK]  AAX signed via PACE Eden + Azure Key Vault (trusted Authenticode)" -ForegroundColor Green
+    } elseif ($AAXSigningStatus -eq "signed_devcert") {
+        Write-Host "[OK]  AAX signed via PACE Eden + dev cert (Authenticode root NOT trusted)" -ForegroundColor Yellow
     } else {
-        Write-Host "[!] AAX plugin NOT signed ($AAXSigningStatusSummary)" -ForegroundColor Yellow
+        Write-Host "[!!]  AAX is unsigned ($AAXSigningStatus)" -ForegroundColor Yellow
     }
 }
-Write-Host "[ ] Upload to distribution platform" -ForegroundColor Yellow
-Write-Host "[ ] Share link with beta testers" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "============================================" -ForegroundColor Cyan

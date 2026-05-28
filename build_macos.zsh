@@ -1,17 +1,35 @@
 #!/bin/zsh
 
-# MixCompare macOS Release Build Script (zsh)
-# - WebUI のビルド → JUCE (Xcode) で VST3/AU/Standalone をビルド
-# - コード署名（Hardened Runtime）→ Notary Tool でノータライズ → ステープル
-# - Windows 用スクリプト(build_windows_release.ps1)の体裁に合わせて段階表示・要約を出力
+# MixCompare macOS Release Build Script (zsh) — iPlug2 edition
+# - WebUI 本番ビルド → CMake (Xcode) で VST3/AU/CLAP/Standalone (+ AAX) Universal Binary
+# - Hardened Runtime コード署名 → AAX PACE (iLok) 署名（任意）
+# - 言語別ライセンス (en/ja) を持つ署名済み PKG → notarytool で公証 → stapler 添付
+# - 互換用 ZIP も同時生成（build_windows.ps1 と同じ流儀）
+#
+# 注: JUCE 版では全フォーマットに同一 CFBundleIdentifier が振られ、Logic 等で
+# コンポーネント選択が壊れるため署名前に PlistBuddy で一意化していた。iPlug2 は
+# BUNDLE_ID = BUNDLE_DOMAIN.BUNDLE_MFR.<API_EXT>.BUNDLE_NAME（API_EXT は
+# vst3/audiounit/aax/app/clap でフォーマット毎に異なる）を生成するので、
+# 手動の一意化処理は不要。
+#
+# 必須環境変数:
+#   CODESIGN_IDENTITY  : "Developer ID Application: Your Name (TEAMID)"（未設定なら自動検出）
+#   INSTALLER_IDENTITY : "Developer ID Installer: ..."（未設定なら自動検出）
+#   公証はいずれか一組:
+#     (A) APPLE_API_KEY_PATH / APPLE_API_KEY_ID(/APPLE_API_KEY) / APPLE_API_ISSUER
+#     (B) NOTARYTOOL_PROFILE
+#     (C) APPLE_ID / APP_PASSWORD / TEAM_ID
+# 任意環境変数:
+#   ENTITLEMENTS_PATH  : 付与する entitlements の .plist パス
+#   PACE_USERNAME / PACE_PASSWORD / PACE_ORGANIZATION : AAX の iLok 署名（任意）
+#   WRAPTOOL_PATH      : wraptool の明示パス
+#   PKG_ID_BASE        : pkg 識別子のベース（既定 com.bucketrelay.mixcompare3）
+#   SKIP_WEBUI=1       : WebUI ビルドをスキップ
 
 set -e
 set -u
 set -o pipefail
 
-#============================================
-#  出力用の装飾関数（PowerShell版に近い体裁）
-#============================================
 color_cyan="\033[36m"
 color_yellow="\033[33m"
 color_green="\033[32m"
@@ -19,65 +37,18 @@ color_red="\033[31m"
 color_gray="\033[90m"
 color_reset="\033[0m"
 
-echo_header() {
-    echo ""
-    echo -e "${color_cyan}============================================${color_reset}"
-    echo -e "${color_cyan}   $1${color_reset}"
-    echo -e "${color_cyan}============================================${color_reset}"
-    echo ""
-}
-
-echo_step() {
-    echo -e "${color_yellow}► $1${color_reset}"
-}
-
-echo_success() {
-    echo -e "${color_green}✓ $1${color_reset}"
-}
-
-echo_error() {
-    echo -e "${color_red}✗ $1${color_reset}" 1>&2
-}
-
-#============================================
-#  設定と前提
-#============================================
-# - バージョンはリポジトリ直下の VERSION から取得
-# - 署名には Developer ID Application 証明書が必要
-# - ノータライズには notarytool の資格情報が必要
-#   (優先1) App Store Connect API キー: APPLE_API_KEY_PATH / APPLE_API_KEY_ID(/APPLE_API_KEY) / APPLE_API_ISSUER
-#           例) xcrun notarytool submit ... --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait
-#   (優先2) Keychain プロファイル: NOTARYTOOL_PROFILE
-#   (優先3) Apple ID 直指定: APPLE_ID / APP_PASSWORD / TEAM_ID
-#
-# 必須環境変数:
-#   CODESIGN_IDENTITY : 例) "Developer ID Application: Your Name (TEAMID)"
-#   どれか一つ:
-#     (A) APPLE_API_KEY_PATH / APPLE_API_KEY_ID(/APPLE_API_KEY) / APPLE_API_ISSUER
-#     (B) NOTARYTOOL_PROFILE
-#     (C) APPLE_ID / APP_PASSWORD / TEAM_ID
-#
-# 任意環境変数:
-#   ENTITLEMENTS_PATH : 付与する entitlements の .plist パス
-#   CODESIGN_DEEP     : "1" で --deep を付与
-#   SKIP_WEBUI        : "1" で WebUI ビルドをスキップ
+echo_header()  { echo ""; echo -e "${color_cyan}============================================${color_reset}"; echo -e "${color_cyan}   $1${color_reset}"; echo -e "${color_cyan}============================================${color_reset}"; echo ""; }
+echo_step()    { echo -e "${color_yellow}>> $1${color_reset}"; }
+echo_success() { echo -e "${color_green}[OK] $1${color_reset}"; }
+echo_warn()    { echo -e "${color_yellow}[!!] $1${color_reset}"; }
+echo_error()   { echo -e "${color_red}[FAIL] $1${color_reset}" 1>&2; }
 
 CONFIGURATION="Release"
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --config|-c)
-            CONFIGURATION="${2:-Release}"
-            shift 2
-            ;;
-        --skip-webui)
-            export SKIP_WEBUI="1"
-            shift 1
-            ;;
-        *)
-            echo_error "Unknown argument: $1"
-            exit 1
-            ;;
+        --config|-c) CONFIGURATION="${2:-Release}"; shift 2 ;;
+        --skip-webui) export SKIP_WEBUI="1"; shift 1 ;;
+        *) echo_error "Unknown argument: $1"; exit 1 ;;
     esac
 done
 
@@ -85,229 +56,157 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}"
 VERSION_FILE="${ROOT_DIR}/VERSION"
 
-if [[ ! -f "${VERSION_FILE}" ]]; then
-    echo_error "VERSION file not found: ${VERSION_FILE}"
-    exit 1
-fi
-
+[[ -f "${VERSION_FILE}" ]] || { echo_error "VERSION file not found: ${VERSION_FILE}"; exit 1; }
 VERSION="$(cat "${VERSION_FILE}" | tr -d '\r' | tr -d '\n')"
 BUILD_DATE="$(date +%Y-%m-%d)"
 
-# Load .env file if present (KEY=VALUE format, one per line)
+# Load .env if present
 ENV_FILE="${ROOT_DIR}/.env"
 if [[ -f "${ENV_FILE}" ]]; then
     echo -e "${color_gray}Loading environment variables from .env ...${color_reset}"
     while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line## }"          # trim leading
-        line="${line%% }"          # trim trailing
+        line="${line## }"; line="${line%% }"
         [[ -z "$line" || "$line" == \#* ]] && continue
-        key="${line%%=*}"
-        value="${line#*=}"
-        value="${value#\"}" ; value="${value%\"}"   # strip surrounding quotes
-        value="${value#\'}" ; value="${value%\'}"
-        if [[ -z "${(P)key:-}" ]]; then
-            export "$key=$value"
-        fi
+        key="${line%%=*}"; value="${line#*=}"
+        value="${value#\"}"; value="${value%\"}"
+        value="${value#\'}"; value="${value%\'}"
+        if [[ -z "${(P)key:-}" ]]; then export "$key=$value"; fi
     done < "${ENV_FILE}"
 fi
 
-echo_header "MixCompare ${VERSION} Build Script (macOS zsh)"
+echo_header "MixCompare ${VERSION} Build Script (macOS zsh, iPlug2)"
 
-# ディレクトリ設定
 WEBUI_DIR="${ROOT_DIR}/webui"
 BUILD_DIR="${ROOT_DIR}/build"
 OUTPUT_DIR="${ROOT_DIR}/releases/${VERSION}/macOS"
-AAX_SDK_PATH="${ROOT_DIR}/aax-sdk"
+# iPlug2 の AAX 検出は ${IPLUG_DEPS_DIR}/AAX_SDK で hard-coded。
+AAX_SDK_PATH="${ROOT_DIR}/iPlug2/Dependencies/IPlug/AAX_SDK"
 
-# Check AAX SDK
 echo_step "Checking AAX SDK..."
 if [[ -f "${AAX_SDK_PATH}/Interfaces/AAX.h" ]]; then
     echo_success "AAX SDK found - AAX will be built"
     BUILD_AAX=1
-    
-    # Build AAX Library (Universal Binary)
-    echo_step "Building AAX Library (Universal Binary)..."
-    AAX_LIBRARY_BUILD_DIR="${AAX_SDK_PATH}/Libs/AAXLibrary/build"
-    
-    # Clean existing build
-    if [[ -d "${AAX_LIBRARY_BUILD_DIR}" ]]; then
-        echo "  Cleaning existing AAX Library build..." 
-        rm -rf "${AAX_LIBRARY_BUILD_DIR}"
+
+    # iPlug2 がバンドルしている AAX SDK は cmake_minimum_required(3.12) で書かれて
+    # おり、PUBLIC な include path が "../../Interfaces" のような相対パス。CMake 4.x
+    # は INTERFACE_INCLUDE_DIRECTORIES がソースツリー内を指すと拒否するので、
+    # PUBLIC の二行を $<BUILD_INTERFACE:...> でラップしてから configure に渡す。
+    AAX_LIB_CMAKE="${AAX_SDK_PATH}/Libs/AAXLibrary/CMakeLists.txt"
+    if [[ -f "${AAX_LIB_CMAKE}" ]] && ! grep -qF 'BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../Interfaces' "${AAX_LIB_CMAKE}"; then
+        echo_step "Patching AAX SDK CMakeLists.txt for CMake 4.x compatibility..."
+        # macOS の sed は -i に空文字を要求する（GNU sed と差異あり）。
+        /usr/bin/sed -i '' \
+            -e 's|^    \${CMAKE_CURRENT_SOURCE_DIR}/\.\./\.\./Interfaces$|    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../Interfaces>|' \
+            -e 's|^    \${CMAKE_CURRENT_SOURCE_DIR}/\.\./\.\./Interfaces/ACF$|    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../Interfaces/ACF>|' \
+            "${AAX_LIB_CMAKE}"
+        echo_success "AAX SDK patched"
     fi
-    
-    mkdir -p "${AAX_LIBRARY_BUILD_DIR}"
-    cd "${AAX_LIBRARY_BUILD_DIR}"
-    
-    # Directory for Universal Binary
-    AAX_LIB_DIR="${AAX_SDK_PATH}/Libs/x86_64_arm64/Release"
-    
-    echo "  Configuring AAX Library with CMake (Universal Binary)..."
-    cmake .. -G Xcode \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
-    if [[ $? -ne 0 ]]; then
-        echo_error "Failed to configure AAX Library"
-        exit 1
-    fi
-    
-    echo "  Building AAX Library (Release, Universal Binary)..."
-    cmake --build . --config Release -- -parallelizeTargets
-    if [[ $? -ne 0 ]]; then
-        echo_error "Failed to build AAX Library"
-        exit 1
-    fi
-    
-    # Copy library to expected location
-    BUILT_LIB="${AAX_LIBRARY_BUILD_DIR}/Release/libAAXLibrary.a"
-    if [[ -f "${BUILT_LIB}" ]]; then
-        mkdir -p "${AAX_LIB_DIR}"
-        cp "${BUILT_LIB}" "${AAX_LIB_DIR}/"
-        
-        # Verify Universal Binary
-        echo "  Checking architecture of built library..."
-        lipo -info "${AAX_LIB_DIR}/libAAXLibrary.a"
-        
-        echo_success "AAX Library build completed (Universal Binary)"
-    else
-        echo_error "AAX Library build output not found"
-        exit 1
-    fi
-    
-    cd "${ROOT_DIR}"
 else
-    echo -e "${color_yellow}AAX SDK not found: ${AAX_SDK_PATH} - AAX will be skipped${color_reset}"
+    echo_warn "AAX SDK not found at ${AAX_SDK_PATH} - AAX will be skipped"
     BUILD_AAX=0
 fi
 
-echo_step "Creating output directories..."
 mkdir -p "${OUTPUT_DIR}"
-echo_success "Output directories created"
 
-#============================================
-# Step 1: WebUI を本番ビルド
-#============================================
+# ----------------------------------------------------------------------------
+# Step 1: WebUI build
+# ----------------------------------------------------------------------------
 echo_header "Step 1: Building WebUI for production"
 
 if [[ "${SKIP_WEBUI:-0}" != "1" ]]; then
-    if [[ ! -d "${WEBUI_DIR}" ]]; then
-        echo_error "WebUI directory not found: ${WEBUI_DIR}"
-        exit 1
-    fi
+    [[ -d "${WEBUI_DIR}" ]] || { echo_error "WebUI directory not found: ${WEBUI_DIR}"; exit 1; }
 
-    # Remove previous build artifacts
-    UI_PUBLIC_DIR="${ROOT_DIR}/plugin/ui/public"
-    if [[ -d "${UI_PUBLIC_DIR}" ]]; then
-        echo_step "Removing previous WebUI output..."
-        rm -rf "${UI_PUBLIC_DIR}"
-        echo_success "Cleanup completed"
-    fi
+    # Vite outDir は plugin/resources/web (小文字)。LoadIndexHtml(__FILE__,...) の
+    # Debug 経路は parent_path() / "Resources" / "web" を引くが、APFS 既定の
+    # case-insensitive 解決で同じファイルにヒットする。
+    WEB_OUT_DIR="${ROOT_DIR}/plugin/resources/web"
+    [[ -d "${WEB_OUT_DIR}" ]] && rm -rf "${WEB_OUT_DIR}"
 
     pushd "${WEBUI_DIR}" >/dev/null
-
-    # Install dependencies (first time only)
     if [[ ! -d node_modules ]]; then
         echo_step "Installing npm dependencies..."
         npm install --no-audit --no-fund
     fi
-
-    # Build
     echo_step "Building WebUI..."
     npm run build
-    echo_success "WebUI build completed"
-
     popd >/dev/null
 
-    if [[ ! -f "${ROOT_DIR}/plugin/ui/public/index.html" ]]; then
-        echo_error "WebUI build output not found (plugin/ui/public/index.html)"
-        exit 1
-    fi
+    [[ -f "${WEB_OUT_DIR}/index.html" ]] || { echo_error "WebUI build output not found at ${WEB_OUT_DIR}"; exit 1; }
+    echo_success "WebUI build completed"
 else
-    echo_step "Skipping WebUI build due to SKIP_WEBUI=1"
+    echo_step "Skipping WebUI build (SKIP_WEBUI=1)"
 fi
 
-echo -e "${color_gray}Output: ${ROOT_DIR}/plugin/ui/public${color_reset}"
-
-#============================================
-# Step 2: CMake (Xcode) で VST3/AU/Standalone (+ AAX) をビルド
-#============================================
+# ----------------------------------------------------------------------------
+# Step 2: Native plugin build (Universal Binary)
+# ----------------------------------------------------------------------------
 if [[ ${BUILD_AAX} -eq 1 ]]; then
-    echo_header "Step 2: Building Plugins (VST3/AU/Standalone/AAX)"
+    echo_header "Step 2: Building Plugins (VST3/AU/CLAP/Standalone/AAX)"
 else
-    echo_header "Step 2: Building Plugins (VST3/AU/Standalone)"
+    echo_header "Step 2: Building Plugins (VST3/AU/CLAP/Standalone)"
 fi
 
-# Clean existing artifacts (detect permission issues early)
-EXISTING_ARTIFACTS_DIR="${BUILD_DIR}/plugin/MixCompare_artefacts/${CONFIGURATION}"
-if [[ -d "${EXISTING_ARTIFACTS_DIR}" ]]; then
-    echo_step "Removing existing plugin artifacts..."
-    if rm -rf "${EXISTING_ARTIFACTS_DIR}"; then
-        echo_success "Old artifacts removed"
-    else
-        echo_error "Failed to remove old artifacts. Please check ownership and permissions."
-        exit 1
-    fi
-fi
-
-# CMake configuration (Universal Binary)
 echo_step "CMake configuration (${CONFIGURATION}, Universal Binary)..."
+# IPLUG2_UNIVERSAL=ON は CMAKE_OSX_ARCHITECTURES と Xcode の ARCHS / ONLY_ACTIVE_ARCH
+# を一括設定する iPlug2 提供のフラグ。明示的な CMAKE_OSX_ARCHITECTURES 上書きより
+# 推奨経路。
 cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
     -G Xcode \
     -DCMAKE_BUILD_TYPE="${CONFIGURATION}" \
-    -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+    -DIPLUG2_UNIVERSAL=ON
 
-echo_step "Executing build..."
+# iPlug2 の iplug_add_plugin が生成するターゲット名はハイフン区切り小文字。
+TARGETS=(MixCompare-vst3 MixCompare-au MixCompare-clap MixCompare-app)
 if [[ ${BUILD_AAX} -eq 1 ]]; then
-    cmake --build "${BUILD_DIR}" --config "${CONFIGURATION}" --target MixCompare_VST3 MixCompare_AU MixCompare_Standalone MixCompare_AAX
-else
-    cmake --build "${BUILD_DIR}" --config "${CONFIGURATION}" --target MixCompare_VST3 MixCompare_AU MixCompare_Standalone
+    TARGETS+=(MixCompare-aax)
 fi
+
+echo_step "Executing build (${TARGETS[@]})..."
+cmake --build "${BUILD_DIR}" --config "${CONFIGURATION}" --target ${TARGETS[@]}
 echo_success "Plugin build completed"
 
-# Artifact paths
-ARTIFACTS_DIR="${BUILD_DIR}/plugin/MixCompare_artefacts/${CONFIGURATION}"
+# iPlug2 の出力先は build/out/<CONFIG>/MixCompare.{vst3,component,clap,app,aaxplugin}。
+# Windows 版 (build_windows.ps1) では iplug2 が _DEBUG/_RELEASE 用の
+# RUNTIME_OUTPUT_DIRECTORY をフラットに上書きするので out/ 直下に出るが、
+# macOS は generic な RUNTIME_OUTPUT_DIRECTORY しか設定していないため、Xcode
+# generator が $(CONFIGURATION) を自動付与する。
+ARTIFACTS_DIR="${BUILD_DIR}/out/${CONFIGURATION}"
+SRC_VST3="${ARTIFACTS_DIR}/MixCompare.vst3"
+SRC_AU="${ARTIFACTS_DIR}/MixCompare.component"
+SRC_CLAP="${ARTIFACTS_DIR}/MixCompare.clap"
+SRC_APP="${ARTIFACTS_DIR}/MixCompare.app"
 
-# Verify Universal Binary
-echo_step "Checking architecture of built plugins..."
-if [[ -f "${ARTIFACTS_DIR}/VST3/MixCompare.vst3/Contents/MacOS/MixCompare" ]]; then
-    echo "  VST3:"
-    lipo -info "${ARTIFACTS_DIR}/VST3/MixCompare.vst3/Contents/MacOS/MixCompare"
-fi
-if [[ -f "${ARTIFACTS_DIR}/AU/MixCompare.component/Contents/MacOS/MixCompare" ]]; then
-    echo "  AU:"
-    lipo -info "${ARTIFACTS_DIR}/AU/MixCompare.component/Contents/MacOS/MixCompare"
-fi
-if [[ -f "${ARTIFACTS_DIR}/Standalone/MixCompare.app/Contents/MacOS/MixCompare" ]]; then
-    echo "  Standalone:"
-    lipo -info "${ARTIFACTS_DIR}/Standalone/MixCompare.app/Contents/MacOS/MixCompare"
-fi
-if [[ ${BUILD_AAX} -eq 1 ]] && [[ -f "${ARTIFACTS_DIR}/AAX/MixCompare.aaxplugin/Contents/MacOS/MixCompare" ]]; then
-    echo "  AAX:"
-    lipo -info "${ARTIFACTS_DIR}/AAX/MixCompare.aaxplugin/Contents/MacOS/MixCompare"
-fi
-echo_success "Architecture verification completed"
-SRC_VST3="${ARTIFACTS_DIR}/VST3/MixCompare.vst3"
-SRC_AU="${ARTIFACTS_DIR}/AU/MixCompare.component"
-SRC_APP="${ARTIFACTS_DIR}/Standalone/MixCompare.app"
+[[ -d "${SRC_VST3}" ]] || { echo_error "VST3 not found: ${SRC_VST3}"; exit 1; }
+[[ -d "${SRC_AU}" ]]   || { echo_error "AU not found: ${SRC_AU}";     exit 1; }
+[[ -d "${SRC_CLAP}" ]] || { echo_error "CLAP not found: ${SRC_CLAP}"; exit 1; }
+[[ -d "${SRC_APP}" ]]  || { echo_error "Standalone not found: ${SRC_APP}"; exit 1; }
 
-if [[ ! -d "${SRC_VST3}" ]]; then echo_error "VST3 not found: ${SRC_VST3}"; exit 1; fi
-if [[ ! -d "${SRC_AU}" ]]; then echo_error "AU not found: ${SRC_AU}"; exit 1; fi
-if [[ ! -d "${SRC_APP}" ]]; then echo_error "Standalone not found: ${SRC_APP}"; exit 1; fi
-
-# AAX check
 if [[ ${BUILD_AAX} -eq 1 ]]; then
-    SRC_AAX="${ARTIFACTS_DIR}/AAX/MixCompare.aaxplugin"
-    if [[ ! -d "${SRC_AAX}" ]]; then echo_error "AAX not found: ${SRC_AAX}"; exit 1; fi
+    SRC_AAX="${ARTIFACTS_DIR}/MixCompare.aaxplugin"
+    [[ -d "${SRC_AAX}" ]] || { echo_error "AAX not found: ${SRC_AAX}"; exit 1; }
 fi
+
+# Universal Binary の確認
+echo_step "Verifying Universal Binary slices..."
+for bundle in "${SRC_VST3}" "${SRC_AU}" "${SRC_CLAP}" "${SRC_APP}"; do
+    bin="${bundle}/Contents/MacOS/MixCompare"
+    [[ -f "${bin}" ]] || bin="${bundle}/Contents/MacOS/$(basename "${bundle}" | sed 's/\..*//')"
+    if [[ -f "${bin}" ]]; then
+        info="$(lipo -info "${bin}" 2>/dev/null || true)"
+        echo -e "${color_gray}  $(basename "${bundle}"): ${info}${color_reset}"
+    fi
+done
 
 echo_step "Collecting artifacts..."
 DEST_VST3="${OUTPUT_DIR}/MixCompare.vst3"
 DEST_AU="${OUTPUT_DIR}/MixCompare.component"
+DEST_CLAP="${OUTPUT_DIR}/MixCompare.clap"
 DEST_APP="${OUTPUT_DIR}/MixCompare.app"
-
-rm -rf "${DEST_VST3}" "${DEST_AU}" "${DEST_APP}"
+rm -rf "${DEST_VST3}" "${DEST_AU}" "${DEST_CLAP}" "${DEST_APP}"
 cp -R "${SRC_VST3}" "${DEST_VST3}"
-cp -R "${SRC_AU}" "${DEST_AU}"
-cp -R "${SRC_APP}" "${DEST_APP}"
+cp -R "${SRC_AU}"   "${DEST_AU}"
+cp -R "${SRC_CLAP}" "${DEST_CLAP}"
+cp -R "${SRC_APP}"  "${DEST_APP}"
 
 if [[ ${BUILD_AAX} -eq 1 ]]; then
     DEST_AAX="${OUTPUT_DIR}/MixCompare.aaxplugin"
@@ -315,50 +214,11 @@ if [[ ${BUILD_AAX} -eq 1 ]]; then
     cp -R "${SRC_AAX}" "${DEST_AAX}"
 fi
 
-echo_success "Artifacts copied successfully"
+# ----------------------------------------------------------------------------
+# Step 3: Codesign (Hardened Runtime)
+# ----------------------------------------------------------------------------
+echo_header "Step 3: Code Signing (Hardened Runtime)"
 
-#============================================
-# Step 2.5: 各フォーマットの CFBundleIdentifier を一意化
-#   JUCE は BUNDLE_ID を VST3/AU/Standalone/AAX すべてに同一適用するため、
-#   pkg 内のバンドル ID が衝突し、macOS インストーラで「コンポーネントを 1 つ
-#   しかオフにできない／2 つ目を外すと別が復活する」不具合が起きる。
-#   コード署名は Info.plist をシールするので、必ず署名前に書き換える。
-#============================================
-echo_header "Step 2.5: Making CFBundleIdentifier unique per format"
-
-set_unique_bundle_id() {
-    local bundle_path="$1"
-    local suffix="$2"
-    local plist="${bundle_path}/Contents/Info.plist"
-    if [[ ! -f "${plist}" ]]; then
-        echo_error "Info.plist not found: ${plist}"
-        exit 1
-    fi
-    local base
-    base="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "${plist}")"
-    # 再実行時に二重付与しない（DEST は毎回作り直されるので通常は素の ID）
-    if [[ "${base}" == *."${suffix}" ]]; then
-        echo "  $(basename "${bundle_path}"): ${base} (already unique)"
-        return
-    fi
-    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${base}.${suffix}" "${plist}"
-    echo "  $(basename "${bundle_path}"): ${base} -> ${base}.${suffix}"
-}
-
-set_unique_bundle_id "${DEST_VST3}" "vst3"
-set_unique_bundle_id "${DEST_AU}"   "au"
-set_unique_bundle_id "${DEST_APP}"  "app"
-if [[ ${BUILD_AAX} -eq 1 ]]; then
-    set_unique_bundle_id "${DEST_AAX}" "aax"
-fi
-echo_success "CFBundleIdentifier uniquification completed"
-
-#============================================
-# Step 3: コード署名（Hardened Runtime）
-#============================================
-echo_header "Step 3: Code Signing"
-
-# Auto-detect CODESIGN_IDENTITY if not set (Developer ID Application priority, filter by CODESIGN_TEAM_ID)
 if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
     echo_step "CODESIGN_IDENTITY not set, attempting auto-detection..."
     if [[ -n "${CODESIGN_TEAM_ID:-}" ]]; then
@@ -367,80 +227,41 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
     if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
         CODESIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F '"' '/Developer ID Application:/ {print $2; exit}') || true
     fi
-    if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-        echo_success "Auto-selected signing ID: ${CODESIGN_IDENTITY}"
-    else
-        echo_error "CODESIGN_IDENTITY is not set. Example: \"Developer ID Application: Your Name (TEAMID)\""
-        echo -e "${color_gray}Available signing IDs:${color_reset}"
-        security find-identity -v -p codesigning || true
-        exit 1
-    fi
+    [[ -n "${CODESIGN_IDENTITY:-}" ]] || { echo_error "CODESIGN_IDENTITY not found. Install a Developer ID Application certificate and retry."; exit 1; }
+    echo_success "Auto-selected signing ID: ${CODESIGN_IDENTITY}"
 fi
 
 sign_bundle() {
     local bundle_path="$1"
     local entitlements_args=()
-    local deep_args=()
-
-    # Apply Hardened Runtime (--options runtime). Add entitlements if needed.
     if [[ -n "${ENTITLEMENTS_PATH:-}" && -f "${ENTITLEMENTS_PATH}" ]]; then
         entitlements_args=(--entitlements "${ENTITLEMENTS_PATH}")
     fi
-    if [[ "${CODESIGN_DEEP:-0}" == "1" ]]; then
-        deep_args=(--deep)
-    fi
-
-    # Sign the executable inside the bundle first (if it exists)
-    local main_binary="${bundle_path}/Contents/MacOS/$(basename "${bundle_path}" .app | sed 's/\\.vst3$//' | sed 's/\\.component$//')"
-    if [[ -f "${main_binary}" ]]; then
-        codesign --force --timestamp --options runtime "${entitlements_args[@]}" "${deep_args[@]}" --sign "${CODESIGN_IDENTITY}" "${main_binary}"
-    fi
-
-    # Sign the bundle
-    codesign --force --timestamp --options runtime "${entitlements_args[@]}" "${deep_args[@]}" --sign "${CODESIGN_IDENTITY}" "${bundle_path}"
-
-    # Verify (deep/strict)
+    codesign --force --timestamp --options runtime "${entitlements_args[@]}" --sign "${CODESIGN_IDENTITY}" "${bundle_path}"
     codesign --verify --deep --strict --verbose=2 "${bundle_path}"
 }
 
-echo_step "Signing VST3..."
-sign_bundle "${DEST_VST3}"
-echo_success "VST3 signing OK"
-
-echo_step "Signing AU..."
-sign_bundle "${DEST_AU}"
-echo_success "AU signing OK"
-
-echo_step "Signing Standalone..."
-sign_bundle "${DEST_APP}"
-echo_success "Standalone signing OK"
-
+echo_step "Signing VST3...";       sign_bundle "${DEST_VST3}"; echo_success "VST3 signing OK"
+echo_step "Signing AU...";         sign_bundle "${DEST_AU}";   echo_success "AU signing OK"
+echo_step "Signing CLAP...";       sign_bundle "${DEST_CLAP}"; echo_success "CLAP signing OK"
+echo_step "Signing Standalone..."; sign_bundle "${DEST_APP}";  echo_success "Standalone signing OK"
 if [[ ${BUILD_AAX} -eq 1 ]]; then
-    echo_step "Signing AAX..."
-    sign_bundle "${DEST_AAX}"
-    echo_success "AAX signing OK (unsigned developer build)"
+    echo_step "Signing AAX (developer signature, before PACE)..."
+    sign_bundle "${DEST_AAX}"; echo_success "AAX dev signing OK"
 fi
 
-#============================================
-# Step 3.5: AAX PACE 署名（wraptool sign, 任意）
-#============================================
+# ----------------------------------------------------------------------------
+# Step 3.5: AAX PACE / iLok signing (optional, mirrors build_windows.ps1)
+# ----------------------------------------------------------------------------
+AAX_PACE_STATUS="not_attempted"
 if [[ ${BUILD_AAX} -eq 1 ]]; then
-    echo_header "Step 3.5: PACE Eden 署名 (AAX macOS)"
+    echo_header "Step 3.5: AAX PACE (iLok) signing"
 
-    # PACE アカウント情報と WCGUID は .env (または環境変数) から取得。
-    # Windows 側 build_windows.ps1 と揃えた変数名セット:
-    #   PACE_USERNAME     : iLok アカウント名
-    #   PACE_PASSWORD     : iLok パスワード
-    #   PACE_ORGANIZATION : PACE Central Web で発行された WCGUID (プラグインごとに固有)
-    # 旧スクリプト互換のため PACE_WCGUID が設定されていて PACE_ORGANIZATION が未設定なら
-    # それを採用する。
-    PACE_ORGANIZATION_EFFECTIVE="${PACE_ORGANIZATION:-${PACE_WCGUID:-}}"
+    # 旧スクリプト互換: PACE_WCGUID が設定されていて PACE_ORGANIZATION が未設定なら採用。
+    PACE_ORG_EFFECTIVE="${PACE_ORGANIZATION:-${PACE_WCGUID:-}}"
 
-    # Guess wraptool location (can be overridden)
     WRAPTOOL_PATH_CANDIDATES=()
-    if [[ -n "${WRAPTOOL_PATH:-}" ]]; then
-        WRAPTOOL_PATH_CANDIDATES+=("${WRAPTOOL_PATH}")
-    fi
+    [[ -n "${WRAPTOOL_PATH:-}" ]] && WRAPTOOL_PATH_CANDIDATES+=("${WRAPTOOL_PATH}")
     WRAPTOOL_PATH_CANDIDATES+=(
         "/Applications/PACEAntiPiracy/Eden/Fusion/Versions/5/bin/wraptool"
         "/Applications/PACE Anti-Piracy/Eden/Fusion/Versions/5/bin/wraptool"
@@ -449,253 +270,115 @@ if [[ ${BUILD_AAX} -eq 1 ]]; then
         "/usr/local/bin/wraptool"
         "/opt/local/bin/wraptool"
     )
-
     FOUND_WRAPTOOL=""
     for p in "${WRAPTOOL_PATH_CANDIDATES[@]}"; do
-        if [[ -x "$p" ]]; then
-            FOUND_WRAPTOOL="$p"
-            break
-        fi
+        if [[ -x "$p" ]]; then FOUND_WRAPTOOL="$p"; break; fi
     done
 
-    # 必須環境変数チェック（Windows 側と同じセット）
     MISSING_PACE_VARS=()
-    [[ -z "${PACE_USERNAME:-}" ]]              && MISSING_PACE_VARS+=("PACE_USERNAME")
-    [[ -z "${PACE_PASSWORD:-}" ]]              && MISSING_PACE_VARS+=("PACE_PASSWORD")
-    [[ -z "${PACE_ORGANIZATION_EFFECTIVE}" ]]  && MISSING_PACE_VARS+=("PACE_ORGANIZATION")
+    [[ -z "${PACE_USERNAME:-}" ]]      && MISSING_PACE_VARS+=("PACE_USERNAME")
+    [[ -z "${PACE_PASSWORD:-}" ]]      && MISSING_PACE_VARS+=("PACE_PASSWORD")
+    [[ -z "${PACE_ORG_EFFECTIVE}" ]]   && MISSING_PACE_VARS+=("PACE_ORGANIZATION")
 
     if [[ -z "${FOUND_WRAPTOOL}" ]]; then
-        echo -e "${color_yellow}wraptool not found. Skipping AAX PACE signing.${color_reset}"
-        echo -e "${color_gray}Please set WRAPTOOL_PATH environment variable.${color_reset}"
+        echo_warn "wraptool not found - skipping PACE signing (set WRAPTOOL_PATH to override)."
+        AAX_PACE_STATUS="wraptool_missing"
     elif (( ${#MISSING_PACE_VARS[@]} > 0 )); then
-        echo -e "${color_yellow}Missing PACE credentials: ${MISSING_PACE_VARS[*]}. Skipping AAX PACE signing.${color_reset}"
-        echo -e "${color_gray}Set them in .env (project root) or export them in your shell.${color_reset}"
+        echo_warn "Missing PACE credentials: ${MISSING_PACE_VARS[*]} - skipping PACE signing."
+        AAX_PACE_STATUS="credentials_missing"
     else
-        echo_step "Using wraptool to apply iLok signing to AAX..."
-
-        # Build signing arguments
-        WRAP_ARGS=(
-            sign
-            --verbose
-            --account "${PACE_USERNAME}"
-            --password "${PACE_PASSWORD}"
-            --wcguid "${PACE_ORGANIZATION_EFFECTIVE}"
-            --signid "${CODESIGN_IDENTITY}"
-            --dsigharden
-            --dsig1-compat on
-            --in "${DEST_AAX}"
-            --out "${DEST_AAX}"
-        )
-
-        # パスワードをログに出さないよう、コマンドダンプは抑制する
-        echo -e "${color_gray}wraptool command: ${FOUND_WRAPTOOL} sign --verbose --account ${PACE_USERNAME} --password *** --wcguid ${PACE_ORGANIZATION_EFFECTIVE} --signid ${CODESIGN_IDENTITY} --dsigharden --dsig1-compat on --in ${DEST_AAX} --out ${DEST_AAX}${color_reset}"
-        if ! "${FOUND_WRAPTOOL}" "${WRAP_ARGS[@]}"; then
-            echo -e "${color_yellow}Warning: AAX PACE signing failed (continuing with unsigned version).${color_reset}"
+        echo_step "Signing AAX with PACE wraptool..."
+        # パスワードはログに出さない
+        echo -e "${color_gray}  ${FOUND_WRAPTOOL} sign --account ${PACE_USERNAME} --password *** --wcguid ${PACE_ORG_EFFECTIVE} --signid \"${CODESIGN_IDENTITY}\" --in ${DEST_AAX} --out ${DEST_AAX}${color_reset}"
+        if "${FOUND_WRAPTOOL}" sign \
+                --verbose \
+                --account "${PACE_USERNAME}" \
+                --password "${PACE_PASSWORD}" \
+                --wcguid "${PACE_ORG_EFFECTIVE}" \
+                --signid "${CODESIGN_IDENTITY}" \
+                --dsigharden \
+                --dsig1-compat on \
+                --in "${DEST_AAX}" \
+                --out "${DEST_AAX}"; then
+            echo_success "AAX PACE signed"
+            AAX_PACE_STATUS="signed"
         else
-            echo_success "AAX PACE signing completed"
+            echo_warn "AAX PACE signing failed - continuing with developer-signed build"
+            AAX_PACE_STATUS="signing_failed"
         fi
     fi
 fi
 
-#============================================
-# Step 4: ドキュメントとバージョン情報の生成
-#============================================
-echo_header "Step 4: Creating documentation and version info"
-
-# Architecture detection (from VST3 executable)
-ARCH="universal"  # Built as Universal Binary
-if [[ -f "${DEST_VST3}/Contents/MacOS/MixCompare" ]]; then
-    INFO="$(lipo -info "${DEST_VST3}/Contents/MacOS/MixCompare" 2>/dev/null || true)"
-    if echo "$INFO" | grep -q "x86_64" && echo "$INFO" | grep -q "arm64"; then
-        ARCH="universal"
-        echo "  Verified: Universal Binary (x86_64 + arm64) confirmed"
-    elif echo "$INFO" | grep -q "arm64"; then
-        ARCH="arm64"
-    elif echo "$INFO" | grep -q "x86_64"; then
-        ARCH="x86_64"
-    fi
-fi
-
-
-# 英語README（Windows版と同じ体裁）
-AAX_SECTION_EN=""
-if [[ ${BUILD_AAX} -eq 1 ]]; then
-    AAX_SECTION_EN="4. For AAX Plugin (Pro Tools):
-   Copy the entire MixCompare.aaxplugin folder to the following location:
-   /Library/Application Support/Avid/Audio/Plug-Ins/
-
-Note about AAX Plugin:
-- This is an unsigned developer build
-- It will not work in regular Pro Tools
-- Pro Tools Developer Edition is required (free, requires Avid account):
-  https://developer.avid.com
-
-"
-fi
-
-cat > "${OUTPUT_DIR}/ReadMe.txt" <<EOF
-MixCompare ${VERSION} - macOS Installation Guide
-====================================================
-
-Installation Steps
--------------------
-1. Close your DAW before proceeding.
-
-2. For VST3 Plugin:
-   Copy the entire MixCompare.vst3 folder to the following location:
-   ~/Library/Audio/Plug-Ins/VST3/
-
-3. For Audio Unit (AU):
-   Copy the entire MixCompare.component folder to the following location:
-   ~/Library/Audio/Plug-Ins/Components/
-
-4. For Standalone Application:
-   Copy MixCompare.app to any preferred location, for example:
-   /Applications/ or your Desktop.
-
-${AAX_SECTION_EN}5. If macOS shows security warnings:
-   Right-click the plugin and select "Open"
-   Or go to System Preferences > Security & Privacy > General
-   and click "Open Anyway"
-
-6. Launch your DAW and rescan for plugins.
-EOF
-
-# フォーマットリストを構築
-if [[ ${BUILD_AAX} -eq 1 ]]; then
-    FORMATS='["VST3", "AU", "Standalone", "AAX"]'
-    AAX_SIGNING='"unsigned_developer"'
-else
-    FORMATS='["VST3", "AU", "Standalone"]'
-    AAX_SIGNING='"N/A"'
-fi
-
-cat > "${OUTPUT_DIR}/version.json" <<VERSION_JSON
-{
-  "name": "MixCompare",
-  "version": "${VERSION}",
-  "build_date": "${BUILD_DATE}",
-  "platform": "macOS",
-  "architecture": "${ARCH}",
-  "formats": ${FORMATS},
-  "webui": "embedded",
-  "build_type": "${CONFIGURATION}",
-  "aax_signing": ${AAX_SIGNING}
-}
-VERSION_JSON
-
-echo_success "ReadMe.txt and version.json created"
-
-#============================================
-# Step 5: コンポーネント PKG 生成（VST3/AU/AAX/Standalone）
-#============================================
-echo_header "Step 5: Creating component PKGs"
+# ----------------------------------------------------------------------------
+# Step 4: PKG composition with localized licenses (en / ja)
+# ----------------------------------------------------------------------------
+echo_header "Step 4: Building component PKGs and localized product PKG"
 
 PKG_WORK_DIR="${OUTPUT_DIR}/pkgwork"
+rm -rf "${PKG_WORK_DIR}"
 mkdir -p "${PKG_WORK_DIR}"
-
-# Base ID (can be overridden by environment variable)
+# 既存リリース (3.0.x) と同じ識別子ベースを維持し、クリーンなアップグレードを保証する。
 PKG_ID_BASE="${PKG_ID_BASE:-com.bucketrelay.mixcompare3}"
 
-# VST3
-echo_step "Creating VST3 component PKG..."
-PKGROOT_VST3="${PKG_WORK_DIR}/root_vst3"
-rm -rf "${PKGROOT_VST3}" && mkdir -p "${PKGROOT_VST3}/Library/Audio/Plug-Ins/VST3"
-cp -R "${DEST_VST3}" "${PKGROOT_VST3}/Library/Audio/Plug-Ins/VST3/"
-PKG_VST3="${PKG_WORK_DIR}/MixCompare_VST3.pkg"
-pkgbuild \
-    --root "${PKGROOT_VST3}" \
-    --identifier "${PKG_ID_BASE}.vst3" \
-    --version "${VERSION}" \
-    --install-location "/" \
-    --ownership recommended \
-    "${PKG_VST3}"
-echo_success "VST3 PKG creation completed"
-
-# AU
-echo_step "Creating AU component PKG..."
-PKGROOT_AU="${PKG_WORK_DIR}/root_au"
-rm -rf "${PKGROOT_AU}" && mkdir -p "${PKGROOT_AU}/Library/Audio/Plug-Ins/Components"
-cp -R "${DEST_AU}" "${PKGROOT_AU}/Library/Audio/Plug-Ins/Components/"
-PKG_AU="${PKG_WORK_DIR}/MixCompare_AU.pkg"
-pkgbuild \
-    --root "${PKGROOT_AU}" \
-    --identifier "${PKG_ID_BASE}.au" \
-    --version "${VERSION}" \
-    --install-location "/" \
-    --ownership recommended \
-    "${PKG_AU}"
-echo_success "AU PKG creation completed"
-
-# Standalone (using --component, /Applications as default. Supports installer location changes)
-echo_step "Creating Standalone component PKG..."
-PKG_APP="${PKG_WORK_DIR}/MixCompare_Standalone.pkg"
-pkgbuild \
-    --component "${DEST_APP}" \
-    --identifier "${PKG_ID_BASE}.app" \
-    --version "${VERSION}" \
-    --install-location "/Applications" \
-    "${PKG_APP}"
-echo_success "Standalone PKG creation completed"
-
-# AAX (only if exists)
-PKG_AAX=""
-if [[ ${BUILD_AAX} -eq 1 ]]; then
-    echo_step "Creating AAX component PKG..."
-    PKGROOT_AAX="${PKG_WORK_DIR}/root_aax"
-    rm -rf "${PKGROOT_AAX}" && mkdir -p "${PKGROOT_AAX}/Library/Application Support/Avid/Audio/Plug-Ins"
-    cp -R "${DEST_AAX}" "${PKGROOT_AAX}/Library/Application Support/Avid/Audio/Plug-Ins/"
-    PKG_AAX="${PKG_WORK_DIR}/MixCompare_AAX.pkg"
+build_component_pkg() {
+    local kind="$1" src="$2" dst_path="$3"
+    local pkgroot="${PKG_WORK_DIR}/root_${kind}"
+    rm -rf "${pkgroot}"
+    mkdir -p "${pkgroot}${dst_path}"
+    cp -R "${src}" "${pkgroot}${dst_path}/"
     pkgbuild \
-        --root "${PKGROOT_AAX}" \
-        --identifier "${PKG_ID_BASE}.aax" \
+        --root "${pkgroot}" \
+        --identifier "${PKG_ID_BASE}.${kind}" \
         --version "${VERSION}" \
         --install-location "/" \
         --ownership recommended \
-        "${PKG_AAX}"
-    echo_success "AAX PKG creation completed"
+        "${PKG_WORK_DIR}/MixCompare_${kind}.pkg"
+}
+
+build_component_pkg "vst3" "${DEST_VST3}" "/Library/Audio/Plug-Ins/VST3"
+build_component_pkg "au"   "${DEST_AU}"   "/Library/Audio/Plug-Ins/Components"
+build_component_pkg "clap" "${DEST_CLAP}" "/Library/Audio/Plug-Ins/CLAP"
+pkgbuild --component "${DEST_APP}" --identifier "${PKG_ID_BASE}.app" --version "${VERSION}" \
+    --install-location "/Applications" "${PKG_WORK_DIR}/MixCompare_app.pkg"
+
+if [[ ${BUILD_AAX} -eq 1 ]]; then
+    build_component_pkg "aax" "${DEST_AAX}" "/Library/Application Support/Avid/Audio/Plug-Ins"
 fi
 
-#============================================
-# Step 6: Distribution を組み立て、製品 PKG を署名
-#============================================
-echo_header "Step 6: Building signed product PKG"
+# 言語別ライセンスを Resources/<lang>.lproj/License.txt に配置すると、
+# productbuild の Distribution.xml の <license file="License.txt"/> が自動的に
+# OS ロケールに応じて切り替えてくれる。
+RESOURCES_DIR="${PKG_WORK_DIR}/resources"
+mkdir -p "${RESOURCES_DIR}/en.lproj" "${RESOURCES_DIR}/ja.lproj"
+[[ -f "${ROOT_DIR}/LICENSE" ]]       && cp "${ROOT_DIR}/LICENSE"       "${RESOURCES_DIR}/en.lproj/License.txt"
+[[ -f "${ROOT_DIR}/LICENSE.ja.md" ]] && cp "${ROOT_DIR}/LICENSE.ja.md" "${RESOURCES_DIR}/ja.lproj/License.txt"
+# ja ライセンスが無ければ en をフォールバックとして配置（ロケール切替が空にならないように）
+[[ -f "${RESOURCES_DIR}/ja.lproj/License.txt" ]] || \
+    { [[ -f "${RESOURCES_DIR}/en.lproj/License.txt" ]] && cp "${RESOURCES_DIR}/en.lproj/License.txt" "${RESOURCES_DIR}/ja.lproj/License.txt"; }
 
 DIST_XML="${PKG_WORK_DIR}/Distribution.xml"
-RESOURCES_DIR="${PKG_WORK_DIR}/resources"
-# LICENSE をリソースに同梱（存在すれば）
-mkdir -p "${RESOURCES_DIR}"
-if [[ -f "${ROOT_DIR}/LICENSE" ]]; then
-    cp "${ROOT_DIR}/LICENSE" "${RESOURCES_DIR}/LICENSE.txt"
-    LICENSE_ENTRY="  <license file=\"LICENSE.txt\"/>"
-else
-    LICENSE_ENTRY=""
-fi
 {
     echo "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
     echo "<installer-gui-script minSpecVersion=\"1\">"
     echo "  <title>MixCompare ${VERSION}</title>"
-    # カスタムインストールパネルをデフォルト表示
     echo "  <options customize=\"always\" allow-external-scripts=\"no\"/>"
-    # ドメイン選択（自分のみ/このMacのすべてのユーザ）を有効化
     echo "  <domains enable_currentUserHome=\"true\" enable_localSystem=\"true\"/>"
-    # ライセンス表示（存在時のみ）
-    if [[ -n \"${LICENSE_ENTRY}\" ]]; then
-        echo "${LICENSE_ENTRY}"
-    fi
+    [[ -f "${RESOURCES_DIR}/en.lproj/License.txt" ]] && echo "  <license file=\"License.txt\"/>"
     echo "  <choices-outline>"
     echo "    <line choice=\"choice_vst3\"/>"
     echo "    <line choice=\"choice_au\"/>"
+    echo "    <line choice=\"choice_clap\"/>"
     echo "    <line choice=\"choice_app\"/>"
-    if [[ ${BUILD_AAX} -eq 1 ]]; then
-        echo "    <line choice=\"choice_aax\"/>"
-    fi
+    [[ ${BUILD_AAX} -eq 1 ]] && echo "    <line choice=\"choice_aax\"/>"
     echo "  </choices-outline>"
     echo "  <choice id=\"choice_vst3\" title=\"VST3 Plugin\" enabled=\"true\" selected=\"true\">"
     echo "    <pkg-ref id=\"${PKG_ID_BASE}.vst3\"/>"
     echo "  </choice>"
     echo "  <choice id=\"choice_au\" title=\"Audio Unit (AU)\" enabled=\"true\" selected=\"true\">"
     echo "    <pkg-ref id=\"${PKG_ID_BASE}.au\"/>"
+    echo "  </choice>"
+    echo "  <choice id=\"choice_clap\" title=\"CLAP Plugin\" enabled=\"true\" selected=\"true\">"
+    echo "    <pkg-ref id=\"${PKG_ID_BASE}.clap\"/>"
     echo "  </choice>"
     echo "  <choice id=\"choice_app\" title=\"Standalone Application\" enabled=\"true\" selected=\"true\">"
     echo "    <pkg-ref id=\"${PKG_ID_BASE}.app\"/>"
@@ -705,138 +388,174 @@ fi
         echo "    <pkg-ref id=\"${PKG_ID_BASE}.aax\"/>"
         echo "  </choice>"
     fi
-    echo "  <pkg-ref id=\"${PKG_ID_BASE}.vst3\">MixCompare_VST3.pkg</pkg-ref>"
-    echo "  <pkg-ref id=\"${PKG_ID_BASE}.au\">MixCompare_AU.pkg</pkg-ref>"
-    echo "  <pkg-ref id=\"${PKG_ID_BASE}.app\">MixCompare_Standalone.pkg</pkg-ref>"
-    if [[ ${BUILD_AAX} -eq 1 ]]; then
-        echo "  <pkg-ref id=\"${PKG_ID_BASE}.aax\">MixCompare_AAX.pkg</pkg-ref>"
-    fi
+    echo "  <pkg-ref id=\"${PKG_ID_BASE}.vst3\">MixCompare_vst3.pkg</pkg-ref>"
+    echo "  <pkg-ref id=\"${PKG_ID_BASE}.au\">MixCompare_au.pkg</pkg-ref>"
+    echo "  <pkg-ref id=\"${PKG_ID_BASE}.clap\">MixCompare_clap.pkg</pkg-ref>"
+    echo "  <pkg-ref id=\"${PKG_ID_BASE}.app\">MixCompare_app.pkg</pkg-ref>"
+    [[ ${BUILD_AAX} -eq 1 ]] && echo "  <pkg-ref id=\"${PKG_ID_BASE}.aax\">MixCompare_aax.pkg</pkg-ref>"
     echo "</installer-gui-script>"
 } > "${DIST_XML}"
 
-# Auto-detect Developer ID Installer certificate (if not specified)
 if [[ -z "${INSTALLER_IDENTITY:-}" ]]; then
     echo_step "INSTALLER_IDENTITY not set, attempting auto-detection..."
-    # Current environment doesn't support -p installer, so filter from all identities
     INSTALLER_IDENTITY=$(security find-identity -v 2>/dev/null | awk -F '"' '/Developer ID Installer:/ {print $2; exit}') || true
-    # If still not found, also show codesigning policy output for reference
-    if [[ -n "${INSTALLER_IDENTITY:-}" ]]; then
-        echo_success "Auto-selected installer signing ID: ${INSTALLER_IDENTITY}"
-    else
-        echo_error "Developer ID Installer certificate not found. Please set INSTALLER_IDENTITY environment variable."
-        echo "  --- security find-identity -v (all) ---"
-        security find-identity -v || true
-        echo "  --- security find-identity -v -p codesigning (reference) ---"
-        security find-identity -v -p codesigning || true
-        echo "  Hint: Make sure the certificate and private key pair is in the 'login' keychain and unlocked."
-        exit 1
-    fi
+    [[ -n "${INSTALLER_IDENTITY:-}" ]] || { echo_error "Developer ID Installer certificate not found"; exit 1; }
+    echo_success "Auto-selected installer signing ID: ${INSTALLER_IDENTITY}"
 fi
 
 PRODUCT_PKG_PATH="${OUTPUT_DIR}/../MixCompare_${VERSION}_macOS.pkg"
-echo_step "Creating product PKG with productbuild..."
+echo_step "productbuild + sign..."
 productbuild \
     --distribution "${DIST_XML}" \
     --package-path "${PKG_WORK_DIR}" \
     --resources "${RESOURCES_DIR}" \
     --sign "${INSTALLER_IDENTITY}" \
     "${PRODUCT_PKG_PATH}"
-echo_success "Product PKG creation and signing completed: ${PRODUCT_PKG_PATH}"
+echo_success "Signed product PKG: ${PRODUCT_PKG_PATH}"
 
-#============================================
-# Step 7: PKG をノータライズ → ステープル
-#============================================
-echo_header "Step 7: Notarization and Stapling for PKG"
+# ----------------------------------------------------------------------------
+# Step 5: Notarize + staple
+# ----------------------------------------------------------------------------
+echo_header "Step 5: Notarization and stapling"
 
 API_KEY_ID_EFFECTIVE="${APPLE_API_KEY_ID:-}"
-if [[ -z "${API_KEY_ID_EFFECTIVE}" && -n "${APPLE_API_KEY:-}" ]]; then
-    API_KEY_ID_EFFECTIVE="${APPLE_API_KEY}"
-fi
+[[ -z "${API_KEY_ID_EFFECTIVE}" && -n "${APPLE_API_KEY:-}" ]] && API_KEY_ID_EFFECTIVE="${APPLE_API_KEY}"
 
 if [[ -n "${APPLE_API_KEY_PATH:-}" && -n "${API_KEY_ID_EFFECTIVE}" && -n "${APPLE_API_ISSUER:-}" ]]; then
-    echo_step "Submitting to notarytool (App Store Connect API key)..."
+    echo_step "Submitting via App Store Connect API key..."
     xcrun notarytool submit "${PRODUCT_PKG_PATH}" \
-        --key "${APPLE_API_KEY_PATH}" \
-        --key-id "${API_KEY_ID_EFFECTIVE}" \
-        --issuer "${APPLE_API_ISSUER}" \
-        --wait
+        --key "${APPLE_API_KEY_PATH}" --key-id "${API_KEY_ID_EFFECTIVE}" --issuer "${APPLE_API_ISSUER}" --wait
 elif [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
-    echo_step "Submitting to notarytool (profile: ${NOTARYTOOL_PROFILE})..."
+    echo_step "Submitting via keychain profile (${NOTARYTOOL_PROFILE})..."
     xcrun notarytool submit "${PRODUCT_PKG_PATH}" --keychain-profile "${NOTARYTOOL_PROFILE}" --wait
 elif [[ -n "${APPLE_ID:-}" && -n "${APP_PASSWORD:-}" && -n "${TEAM_ID:-}" ]]; then
-    echo_step "Submitting to notarytool (Apple ID direct)..."
+    echo_step "Submitting via Apple ID + app-specific password..."
     xcrun notarytool submit "${PRODUCT_PKG_PATH}" --apple-id "${APPLE_ID}" --password "${APP_PASSWORD}" --team-id "${TEAM_ID}" --wait
 else
-    echo_error "Notarization credentials not set. Please set API key (APPLE_API_KEY_PATH/ID/ISSUER) or NOTARYTOOL_PROFILE or APPLE_ID/APP_PASSWORD/TEAM_ID."
+    echo_error "Notarization credentials not set (APPLE_API_KEY_PATH/ID/ISSUER, NOTARYTOOL_PROFILE, or APPLE_ID/APP_PASSWORD/TEAM_ID)"
     exit 1
 fi
+echo_success "Notarization completed"
 
-echo_success "PKG notarization completed"
-
-echo_step "Stapling PKG..."
 xcrun stapler staple "${PRODUCT_PKG_PATH}"
-echo_success "PKG stapling completed"
+echo_success "Stapling completed"
 
-#============================================
-# Step 8: 互換用 ZIP の作成（オプション）
-#============================================
-echo_header "Step 8: Creating ZIP (optional)"
+# ----------------------------------------------------------------------------
+# Step 6: ZIP for compatibility / direct download distribution
+# ----------------------------------------------------------------------------
+echo_header "Step 6: Creating compatibility ZIP"
+
+# ReadMe.txt + version.json + LICENSE 等のサイドカーをまとめて同梱する。
+cat > "${OUTPUT_DIR}/ReadMe.txt" <<EOF
+MixCompare ${VERSION} - macOS Installation Guide
+====================================================
+
+Installation Steps
+-------------------
+1. Close your DAW before proceeding.
+
+2. For VST3 Plugin:
+   Copy MixCompare.vst3 to:
+   ~/Library/Audio/Plug-Ins/VST3/  (per-user)
+   /Library/Audio/Plug-Ins/VST3/   (system-wide)
+
+3. For Audio Unit (AU):
+   Copy MixCompare.component to:
+   ~/Library/Audio/Plug-Ins/Components/  (per-user)
+   /Library/Audio/Plug-Ins/Components/   (system-wide)
+
+4. For CLAP Plugin:
+   Copy MixCompare.clap to:
+   ~/Library/Audio/Plug-Ins/CLAP/  (per-user)
+   /Library/Audio/Plug-Ins/CLAP/   (system-wide)
+
+5. For Standalone Application:
+   Copy MixCompare.app to /Applications/.
+EOF
+if [[ ${BUILD_AAX} -eq 1 ]]; then
+    cat >> "${OUTPUT_DIR}/ReadMe.txt" <<EOF
+
+6. For AAX Plugin (Pro Tools):
+   Copy MixCompare.aaxplugin to:
+   /Library/Application Support/Avid/Audio/Plug-Ins/
+
+   Note: this build is ${AAX_PACE_STATUS}. AAX plug-ins must be PACE-signed
+   to load in Pro Tools production builds; otherwise only Pro Tools Developer
+   can host them.
+EOF
+fi
 
 if [[ ${BUILD_AAX} -eq 1 ]]; then
-    ZIP_NAME="MixCompare_${VERSION}_macOS_VST3_AU_AAX_Standalone.zip"
+    FORMATS='["VST3", "AU", "CLAP", "Standalone", "AAX"]'
+    AAX_FIELD="\"${AAX_PACE_STATUS}\""
 else
-    ZIP_NAME="MixCompare_${VERSION}_macOS_VST3_AU_Standalone.zip"
+    FORMATS='["VST3", "AU", "CLAP", "Standalone"]'
+    AAX_FIELD='"N/A"'
+fi
+cat > "${OUTPUT_DIR}/version.json" <<EOF
+{
+  "name": "MixCompare",
+  "version": "${VERSION}",
+  "build_date": "${BUILD_DATE}",
+  "platform": "macOS",
+  "architecture": "universal",
+  "formats": ${FORMATS},
+  "webui": "embedded",
+  "build_type": "${CONFIGURATION}",
+  "aax_signing": ${AAX_FIELD}
+}
+EOF
+
+[[ -f "${ROOT_DIR}/LICENSE" ]]       && cp "${ROOT_DIR}/LICENSE"       "${OUTPUT_DIR}/LICENSE.txt"
+[[ -f "${ROOT_DIR}/LICENSE.ja.md" ]] && cp "${ROOT_DIR}/LICENSE.ja.md" "${OUTPUT_DIR}/LICENSE.ja.txt"
+
+if [[ ${BUILD_AAX} -eq 1 ]]; then
+    ZIP_NAME="MixCompare_${VERSION}_macOS_VST3_AU_CLAP_AAX_Standalone.zip"
+else
+    ZIP_NAME="MixCompare_${VERSION}_macOS_VST3_AU_CLAP_Standalone.zip"
 fi
 ZIP_PATH="${OUTPUT_DIR}/../${ZIP_NAME}"
 
-# LICENSE を ZIP にも同梱（PKG resources 同梱とは別経路で、トップレベル zip 内からアクセスできるように）
-if [[ -f "${ROOT_DIR}/LICENSE" && ! -f "${OUTPUT_DIR}/LICENSE.txt" ]]; then
-    cp "${ROOT_DIR}/LICENSE" "${OUTPUT_DIR}/LICENSE.txt"
-fi
-
-echo_step "Creating ZIP..."
+[[ -f "${ZIP_PATH}" ]] && rm -f "${ZIP_PATH}"
+echo_step "Creating ZIP: ${ZIP_NAME}..."
 (
     cd "${OUTPUT_DIR}"
-    rm -f "${ZIP_PATH}"
-    if [[ ${BUILD_AAX} -eq 1 ]]; then
-        /usr/bin/zip -r -y "${ZIP_PATH}" \
-            "$(basename "${DEST_VST3}")" \
-            "$(basename "${DEST_AU}")" \
-            "$(basename "${DEST_APP}")" \
-            "$(basename "${DEST_AAX}")" \
-            LICENSE.txt ReadMe.txt version.json >/dev/null
-    else
-        /usr/bin/zip -r -y "${ZIP_PATH}" \
-            "$(basename "${DEST_VST3}")" \
-            "$(basename "${DEST_AU}")" \
-            "$(basename "${DEST_APP}")" \
-            LICENSE.txt ReadMe.txt version.json >/dev/null
-    fi
+    ZIP_ITEMS=(
+        "$(basename "${DEST_VST3}")"
+        "$(basename "${DEST_AU}")"
+        "$(basename "${DEST_CLAP}")"
+        "$(basename "${DEST_APP}")"
+    )
+    [[ ${BUILD_AAX} -eq 1 ]] && ZIP_ITEMS+=("$(basename "${DEST_AAX}")")
+    ZIP_ITEMS+=(ReadMe.txt version.json LICENSE.txt)
+    [[ -f LICENSE.ja.txt ]] && ZIP_ITEMS+=(LICENSE.ja.txt)
+    /usr/bin/zip -r -y "${ZIP_PATH}" "${ZIP_ITEMS[@]}" >/dev/null
 )
-echo_success "ZIP creation completed: ${ZIP_PATH}"
+echo_success "ZIP: ${ZIP_PATH}"
 
-# 最終サマリー
-PRODUCT_SIZE_MB=$(python3 -c 'import os,sys;print(round(os.path.getsize(sys.argv[1])/1024/1024,2))' "${PRODUCT_PKG_PATH}") || PRODUCT_SIZE_MB="-"
-ZIP_SIZE_MB=$(python3 -c 'import os,sys;print(round(os.path.getsize(sys.argv[1])/1024/1024,2))' "${ZIP_PATH}") || ZIP_SIZE_MB="-"
+# ----------------------------------------------------------------------------
+# Final summary
+# ----------------------------------------------------------------------------
+PRODUCT_SIZE_MB=$(python3 -c 'import os,sys;print(round(os.path.getsize(sys.argv[1])/1024/1024,2))' "${PRODUCT_PKG_PATH}" 2>/dev/null || echo "-")
+ZIP_SIZE_MB=$(python3 -c 'import os,sys;print(round(os.path.getsize(sys.argv[1])/1024/1024,2))' "${ZIP_PATH}" 2>/dev/null || echo "-")
 
 echo_header "Build completed successfully!"
-echo -e "PKG: ${PRODUCT_PKG_PATH} (${PRODUCT_SIZE_MB} MB)"
-echo -e "ZIP: ${ZIP_PATH} (${ZIP_SIZE_MB} MB)"
+echo "PKG: ${PRODUCT_PKG_PATH} (${PRODUCT_SIZE_MB} MB)"
+echo "ZIP: ${ZIP_PATH} (${ZIP_SIZE_MB} MB)"
 echo ""
-echo -e "${color_cyan}The package includes (component choices):${color_reset}"
-echo -e "${color_green}[✓] VST3 (固定先: /Library/Audio/Plug-Ins/VST3)${color_reset}"
-echo -e "${color_green}[✓] AU (固定先: /Library/Audio/Plug-Ins/Components)${color_reset}"
-echo -e "${color_green}[✓] Standalone (既定: /Applications、場所変更可)${color_reset}"
+echo -e "${color_cyan}The package includes:${color_reset}"
+echo -e "${color_green}[OK] VST3 (signed, hardened)${color_reset}"
+echo -e "${color_green}[OK] AU (signed, hardened)${color_reset}"
+echo -e "${color_green}[OK] CLAP (signed, hardened)${color_reset}"
+echo -e "${color_green}[OK] Standalone (signed, hardened)${color_reset}"
 if [[ ${BUILD_AAX} -eq 1 ]]; then
-    echo -e "${color_green}[✓] AAX (固定先: /Library/Application Support/Avid/Audio/Plug-Ins)${color_reset}"
+    case "${AAX_PACE_STATUS}" in
+        signed) echo -e "${color_green}[OK] AAX (PACE-signed)${color_reset}" ;;
+        *)      echo -e "${color_yellow}[!!] AAX (${AAX_PACE_STATUS})${color_reset}" ;;
+    esac
 fi
-echo -e "${color_green}[✓] Installer signed (Developer ID Installer)${color_reset}"
-echo -e "${color_green}[✓] Notarized and stapled (PKG)${color_reset}"
-echo -e "${color_green}[✓] Bundles code-signed (Hardened Runtime)${color_reset}"
-if [[ ${BUILD_AAX} -eq 1 ]]; then
-    echo -e "${color_green}[✓] AAX PACE signed (if wraptool available)${color_reset}"
-fi
-echo -e "${color_yellow}[ ] Upload to distribution platform${color_reset}"
-echo -e "${color_yellow}[ ] Share with beta testers${color_reset}"
+echo -e "${color_green}[OK] Installer signed (Developer ID Installer)${color_reset}"
+echo -e "${color_green}[OK] Notarized + stapled (PKG)${color_reset}"
+echo -e "${color_green}[OK] EULA in en/ja shown by installer based on locale${color_reset}"
 
 exit 0
