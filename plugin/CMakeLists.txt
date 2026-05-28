@@ -1,328 +1,171 @@
-# MixCompare プラグイン専用の CMake 設定
-# - ここではプラグイン固有のターゲット定義・依存・定義のみを扱います
-# - 共有のオプションや WebUI の補助ターゲットはルート側に置きます
+# MixCompare plugin target — iPlug2 の iplug_add_plugin ヘルパーを使う。
+# 旧 JUCE 版は CMakeLists.juce.txt を参照。雛形は Synth80/plugin/CMakeLists.txt。
 
-# 親（ルート）から渡されたソースディレクトリを使用
-# - 物理的なファイル移動を伴わずに段階的に分割するため
-if(NOT DEFINED MIXCOMPARE_SRC_DIR)
-    # 既定は plugin/src を指す（単体でも解決できるようにする）
-    set(MIXCOMPARE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
-endif()
-
-# WebView Files のソースディレクトリ
-set(WEBVIEW_FILES_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ui/public")
-
-# JUCE のフロントエンドライブラリをコピー
-file(COPY "${JUCE_MODULES_DIR}/juce_gui_extra/native/javascript/" DESTINATION "${WEBVIEW_FILES_SOURCE_DIR}/js/juce/")
-
-# プラットフォーム別アイコン引数を組み立て（JUCE が PNG から各プラットフォーム向けに変換生成します）
-# - Windows: juceaide が .ico を生成
-# - macOS: juceaide が .icns を生成
-set(ICON_ARGS)
-set(MIXCOMPARE_ICON_PNG "${CMAKE_SOURCE_DIR}/cmake/icon.png")
-if(APPLE)
-    list(APPEND ICON_ARGS
-        ICON_BIG   "${MIXCOMPARE_ICON_PNG}"
+if(NOT DEFINED IPLUG2_DIR OR NOT EXISTS "${IPLUG2_DIR}/iPlug")
+    message(FATAL_ERROR
+        "[MixCompare] iPlug2 not found at IPLUG2_DIR='${IPLUG2_DIR}'.\n"
+        "  Run `git submodule update --init --recursive` and rerun cmake."
     )
 endif()
+
+find_package(iPlug2 REQUIRED)
+
+# macOS Standalone (SWELL) は IPlugAPP_main.cpp が resources/main.rc_mac_dlg /
+# main.rc_mac_menu を #include する。main.rc から swell_resgen.pl で生成する派生物で、
+# iPlug2 helper は自動実行しないため configure 時に走らせる。
+if(APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/main.rc")
+    set(_resgen_pl "${IPLUG2_DIR}/WDL/swell/swell_resgen.pl")
+    set(_main_rc "${CMAKE_CURRENT_SOURCE_DIR}/resources/main.rc")
+    set(_rc_dlg "${CMAKE_CURRENT_SOURCE_DIR}/resources/main.rc_mac_dlg")
+    set(_rc_menu "${CMAKE_CURRENT_SOURCE_DIR}/resources/main.rc_mac_menu")
+    if(EXISTS "${_resgen_pl}")
+        if(NOT EXISTS "${_rc_dlg}" OR NOT EXISTS "${_rc_menu}"
+           OR "${_main_rc}" IS_NEWER_THAN "${_rc_dlg}"
+           OR "${_main_rc}" IS_NEWER_THAN "${_rc_menu}")
+            message(STATUS "[MixCompare] Generating SWELL resources from main.rc")
+            execute_process(
+                COMMAND perl "${_resgen_pl}" "${_main_rc}"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+                RESULT_VARIABLE _resgen_rc
+                OUTPUT_QUIET
+            )
+            if(NOT _resgen_rc EQUAL 0)
+                message(FATAL_ERROR "swell_resgen.pl failed (rc=${_resgen_rc}). Make sure perl is installed.")
+            endif()
+        endif()
+    endif()
+endif()
+
+# オーディオデコード層 (Phase 2)。dr_libs/stb は単一ヘッダ/単一 C ソース (パブリックドメイン)。
+# stb_vorbis.c は C として別途コンパイルし、AudioDecoder.cpp は HEADER_ONLY で宣言だけ取り込む。
+set(MIXCOMPARE_AUDIO_SOURCES
+    audio/IPlaybackSource.h
+    audio/InMemorySource.h
+    audio/AudioDecoder.h
+    audio/AudioDecoder.cpp
+    audio/StreamingDecoder.h
+    audio/StreamingDecoder.cpp
+    audio/StreamingSource.h
+    audio/StreamingSource.cpp
+    audio/MediaFoundationDecoder.h
+    audio/MediaFoundationDecoder.cpp
+    audio/AudioToolboxDecoder.h
+    audio/MonkeyAudioDecoder.h
+    audio/MonkeyAudioDecoder.cpp
+    audio/FileDialog.h
+    lib/decoders/dr_wav.h
+    lib/decoders/dr_flac.h
+    lib/decoders/dr_mp3.h
+    lib/decoders/stb_vorbis.c
+)
 if(WIN32)
-    list(APPEND ICON_ARGS
-        ICON_BIG   "${MIXCOMPARE_ICON_PNG}"
-        ICON_SMALL "${MIXCOMPARE_ICON_PNG}"
-    )
+    list(APPEND MIXCOMPARE_AUDIO_SOURCES audio/FileDialog_win.cpp)
+elseif(APPLE)
+    list(APPEND MIXCOMPARE_AUDIO_SOURCES
+        audio/FileDialog_mac.mm
+        audio/AudioToolboxDecoder.mm)
 endif()
 
-# macOS 固有の設定（wraptool / codesign のヘッダパッド不足対策）
-# - PACE wraptool および Apple の codesign は Mach-O のヘッダ領域に追記が必要になる場合がある
-# - リンク時に余白を確保しておくことで、後段の署名・ラップ処理の失敗を防ぐ
-
-# AAX の自動コピー先をユーザー書き込み可能な場所に変更（開発時の権限エラー回避）
-if(APPLE)
-    # juce_add_plugin がコピー手順を生成する前にグローバルプロパティで上書き
-    set_property(GLOBAL PROPERTY JUCE_AAX_COPY_DIR "${CMAKE_BINARY_DIR}/AAX_Plugins")
-endif()
-
-# Linux ビルド時のみ LV2 を FORMATS に追加（既存の Windows/macOS リリース経路には影響させない）
-set(MIXCOMPARE_FORMATS AU VST3 Standalone AAX)
-if(UNIX AND NOT APPLE)
-    list(APPEND MIXCOMPARE_FORMATS LV2)
-endif()
-
-# プラグイン定義（JUCE v8）
-juce_add_plugin(MixCompare
-    VERSION ${PROJECT_VERSION}                     # プラグインのバージョン（JUCEは数値のみ受け付ける）
-    PRODUCT_NAME "MixCompare"                      # 製品名
-    COMPANY_NAME "Jun Murakami"                    # 会社名
-    BUNDLE_ID "com.junmurakami.mixcompare"         # Bundle ID（スペースなし）
-    PLUGIN_MANUFACTURER_CODE Jmbc                  # メーカーコード（4文字）
-    PLUGIN_CODE Mx03                               # プラグインコード（4文字）
-    FORMATS ${MIXCOMPARE_FORMATS}                  # 対応フォーマット（AAXが有効な場合のみビルドされる）
-    LV2URI "https://junmurakami.com/plugins/mixcompare"
-    PLUGIN_AU_MAIN_TYPE "aufx"                     # Audio Unit メインタイプ（エフェクト）
-    VST3_CATEGORIES "Analyzer"                     # VST3カテゴリ
-    AAX_CATEGORY "AAX_ePlugInCategory_SWGenerators|AAX_ePlugInCategory_SoundField"  # AAXカテゴリ（インストゥルメント扱い）
-    IS_SYNTH FALSE                                 # シンセではない（AAX では後で上書き）
-    NEEDS_MIDI_INPUT FALSE                         # MIDI 入力不要
-    NEEDS_MIDI_OUTPUT FALSE                        # MIDI 出力不要
-    IS_MIDI_EFFECT FALSE                           # MIDI エフェクトではない
-    EDITOR_WANTS_KEYBOARD_FOCUS TRUE               # エディタにキーボードフォーカス
-    COPY_PLUGIN_AFTER_BUILD TRUE                   # ビルド後に所定場所へコピー
-    ${ICON_ARGS}
-
-    # WebView を利用する旨を JUCE に通知
-    NEEDS_WEB_BROWSER TRUE
-    NEEDS_WEBVIEW2 TRUE                            # Windows の WebView2 を要求
+iplug_add_plugin(MixCompare
+    SOURCES
+        MixCompare.cpp
+        MixCompare.h
+        config.h
+        ParameterIDs.h
+        core/AudioEngine.h
+        core/AudioEngine.cpp
+        # 共有 DSP プリミティブ (plugin / wasm 共通の SSoT)。
+        dsp/svt_filter.h
+        dsp/smoothed_value.h
+        dsp/metering.h
+        dsp/momentary_processor.h
+        ${MIXCOMPARE_AUDIO_SOURCES}
+        resources/resource.h
+    UI WEBVIEW
+    EXCLUDE_FORMATS WAM AUV3 VST2
 )
 
-# JUCE の共通ヘッダー(JuceHeader.h)を生成し、インクルードパスへ追加
-juce_generate_juce_header(MixCompare)
-
-# Linux ビルド時のみ CLAP ターゲットを生成（clap-juce-extensions 経由）
-if(UNIX AND NOT APPLE)
-    clap_juce_extensions_plugin(TARGET MixCompare
-        CLAP_ID "com.junmurakami.mixcompare"
-        CLAP_FEATURES audio-effect utility analyzer)
-endif()
-
-# ソースファイルの登録
-target_sources(MixCompare PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/PluginEditor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/PluginEditor.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/PluginProcessor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/PluginProcessor.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MediaFoundationAACFormat.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MediaFoundationAACFormat.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MonkeyAudioFormat.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MonkeyAudioFormat.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/InMemoryPlaybackSource.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/InMemoryPlaybackSource.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MomentaryProcessor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/MomentaryProcessor.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/StateManager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/StateManager.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/AudioEngine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/AudioEngine.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/TransportManager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/TransportManager.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/PlaylistManager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/PlaylistManager.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/MeteringService.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/MeteringService.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/util/CrashHandler.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/util/CrashHandler.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/NullPlaybackSource.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/StreamingPlaybackSource.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/StreamingPlaybackSource.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/ErrorManager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/ErrorManager.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/SystemInfo.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/KeyEventForwarder.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/KeyEventForwarder.h
-)
-
-if(APPLE)
-    target_sources(MixCompare PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/KeyEventForwarder_mac.mm
-    )
-endif()
-
-# バージョン情報ヘッダーの生成
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in
-    ${CMAKE_CURRENT_BINARY_DIR}/Version.h
-    @ONLY
-)
-
-# インクルードパス
-target_include_directories(MixCompare PRIVATE
-    ${MIXCOMPARE_SRC_DIR}
-    ${MIXCOMPARE_SRC_DIR}/audio
-    ${MIXCOMPARE_SRC_DIR}/bridge
-    ${MIXCOMPARE_SRC_DIR}/core
-    ${CMAKE_CURRENT_BINARY_DIR}  # 生成されたVersion.hのために追加
-)
-
-# JUCE ヘッダーをシステムヘッダーとして追加（エディタ/静的解析向け）
-target_include_directories(MixCompare SYSTEM PUBLIC ${JUCE_MODULES_DIR})
-
-# 必要な JUCE モジュールと推奨フラグ
-target_link_libraries(MixCompare
-    PRIVATE
-        juce::juce_audio_basics
-        juce::juce_audio_devices
-        juce::juce_audio_formats
-        juce::juce_audio_processors
-        juce::juce_audio_utils
-        juce::juce_core
-        juce::juce_data_structures
-        juce::juce_dsp
-        juce::juce_events
-        juce::juce_graphics
-        juce::juce_gui_basics
-        juce::juce_gui_extra                 # WebView に必要
-        MACLib                               # Monkey's Audio SDK（APE デコーダー）
-    PUBLIC
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags
-)
-
-# macOS 固有の設定（wraptool / codesign のヘッダパッド不足対策）
-# - PACE wraptool および Apple の codesign は Mach-O のヘッダ領域に追記が必要になる場合がある
-# - juce_add_plugin によりターゲットが生成された「後」で設定を適用する
-if(APPLE)
-    # メインターゲット
-    if (TARGET MixCompare)
-        target_link_options(MixCompare PRIVATE -Wl,-headerpad,578)
-        # macOS のキーボードレイアウト API は ApplicationServices 経由で解決可能
-        target_link_libraries(MixCompare PUBLIC "-framework ApplicationServices")
+# -----------------------------------------------------------------------------
+# Windows: WebUI を全フォーマットの埋め込みリソースとして同梱する。
+# iplug_add_plugin は main.rc を APP ターゲットにしか自動追加しないため、
+# VST3 / CLAP / AAX には明示的に付与する。これにより IDR_INDEX_HTML
+# (= vite-plugin-singlefile が出力した単一 index.html) が全 EXE/DLL に同梱され、
+# MixCompare::LoadIndexHtmlForCurrentBuild が FindResource → LoadHTML で読み出せる。
+# -----------------------------------------------------------------------------
+if(WIN32)
+    set(_mixcompare_main_rc "${CMAKE_CURRENT_SOURCE_DIR}/resources/main.rc")
+    set(_mixcompare_web_index "${CMAKE_CURRENT_SOURCE_DIR}/resources/web/index.html")
+    if(EXISTS "${_mixcompare_main_rc}")
+        # rc.exe は RCDATA の web/index.html を依存として追跡しないため、
+        # `npm run build` で index.html だけが更新されても main.res が再コンパイル
+        # されず古い UI が焼き込まれたままになる。OBJECT_DEPENDS で追跡させる。
+        if(EXISTS "${_mixcompare_web_index}")
+            set_source_files_properties("${_mixcompare_main_rc}" PROPERTIES
+                OBJECT_DEPENDS "${_mixcompare_web_index}")
+        endif()
+        foreach(_fmt vst3 clap aax)
+            set(_target "MixCompare-${_fmt}")
+            if(TARGET ${_target})
+                target_sources(${_target} PRIVATE "${_mixcompare_main_rc}")
+            endif()
+        endforeach()
     endif()
 
-    # JUCE が生成するバリアントターゲット（存在する場合のみ）
-    foreach(wrapperTarget IN ITEMS MixCompare_VST3 MixCompare_AU MixCompare_Standalone MixCompare_AAX)
-        if (TARGET ${wrapperTarget})
-            target_link_options(${wrapperTarget} PRIVATE -Wl,-headerpad,578)
-            target_link_libraries(${wrapperTarget} PRIVATE "-framework ApplicationServices")
+    # OpenUrl の ShellExecuteW、ファイルダイアログ COM、Media Foundation (AAC/M4A デコード)。
+    foreach(_fmt vst3 clap aax app)
+        set(_target "MixCompare-${_fmt}")
+        if(TARGET ${_target})
+            target_link_libraries(${_target} PRIVATE
+                Shell32 Ole32 Shlwapi mfplat mfreadwrite mfuuid)
         endif()
     endforeach()
 endif()
 
-# 共通のコンパイル定義（WebView を有効化）
-target_compile_definitions(MixCompare PUBLIC
-    JUCE_WEB_BROWSER=1                         # WebBrowserComponent（WebView）有効化
-    JUCE_USE_CURL=0                            # curl は不要
-    JUCE_VST3_CAN_REPLACE_VST2=0               # VST2 置換を無効
-    JUCE_WIN_PER_MONITOR_DPI_AWARE=1           # Windows で DPI 対応
-    $<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:JUCE_DEBUG=1>  # Debug/RelWithDebInfo で DevTools 有効
-    $<$<PLATFORM_ID:Windows>:JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1>  # WebView2静的リンク
-
-    JUCE_USE_FLAC=1                            # FLACデコーダー有効化
-    JUCE_USE_OGGVORBIS=1                        # Ogg Vorbisデコーダー有効化
-    JUCE_USE_MP3AUDIOFORMAT=1
-
-    # プラグイン情報（オーディオホスト向けメタデータ）
-    # Name/Desc/Manufacturer/Version は juce_add_plugin() から自動生成されるため重複定義を避ける
-    JucePlugin_ManufacturerCode=0x4a6d6263     # 'Jmbc'
-    JucePlugin_PluginCode=0x4d783033           # 'Mx03'
-    JucePlugin_IsSynth=0
-    JucePlugin_WantsMidiInput=0
-    JucePlugin_ProducesMidiOutput=0
-    JucePlugin_IsMidiEffect=0
-    JucePlugin_EditorRequiresKeyboardFocus=1
-)
-
-# AAX ビルド時のみ IS_SYNTH を TRUE に上書きして、入力無しでもレンダーが走るようにする
-if (JUCE_BUILD_AAX)
-    target_compile_definitions(MixCompare PUBLIC
-        JucePlugin_IsSynth=1
-        JucePlugin_WantsMidiInput=0
-        JucePlugin_ProducesMidiOutput=0
-        JucePlugin_IsMidiEffect=0)
-endif()
-
-# Dev/Prod の読み分け（Dev: Vite, Prod: 埋め込み）
-# Visual Studio 等のマルチコンフィグ環境でも正しく動作するよう、
-# $<CONFIG:...> のジェネレータ式で切り替える。
-
-# Debug/RelWithDebInfo では Dev サーバーを使用
-target_compile_definitions(MixCompare PRIVATE
-    $<$<CONFIG:Debug>:MIXCOMPARE_DEV_MODE=1>
-    $<$<CONFIG:Debug>:LOCAL_DEV_SERVER_ADDRESS="http://127.0.0.1:5173">
-    $<$<NOT:$<CONFIG:Debug>>:MIXCOMPARE_DEV_MODE=0>
-)
-
-# ZIP 化および埋め込み（Prod 系コンフィグ向け）
-set(WEBVIEW_FILES_ZIP_NAME "webview_files.zip")
-set(TARGET_WEBVIEW_FILES_ZIP_PATH "${CMAKE_BINARY_DIR}/${WEBVIEW_FILES_ZIP_NAME}")
-cmake_path(ABSOLUTE_PATH WEBVIEW_FILES_SOURCE_DIR NORMALIZE OUTPUT_VARIABLE PUBLIC_PATH )
-cmake_path(GET PUBLIC_PATH PARENT_PATH WORKING_DIRECTORY)
-
-# 初回構成時のみ、既存の zip を削除してクリーンな再生成を強制する
-if (NOT DEFINED MIXCOMPARE_WEBVIEW_INITIAL_CLEAN_DONE OR NOT MIXCOMPARE_WEBVIEW_INITIAL_CLEAN_DONE)
-    if (EXISTS "${TARGET_WEBVIEW_FILES_ZIP_PATH}")
-        file(REMOVE "${TARGET_WEBVIEW_FILES_ZIP_PATH}")
+# Monkey's Audio (.ape) デコード用 MACLib を全フォーマットにリンク (include は PUBLIC 伝播)。
+foreach(_fmt vst3 clap aax au app)
+    set(_target "MixCompare-${_fmt}")
+    if(TARGET ${_target})
+        target_link_libraries(${_target} PRIVATE MACLib)
     endif()
-    set(MIXCOMPARE_WEBVIEW_INITIAL_CLEAN_DONE ON CACHE BOOL "Initial WebView zip clean executed" FORCE)
+endforeach()
+
+# macOS: AAC/M4A デコード (AudioToolbox) とファイルダイアログ (Cocoa) 用フレームワーク。
+if(APPLE)
+    foreach(_fmt vst3 clap aax au app)
+        set(_target "MixCompare-${_fmt}")
+        if(TARGET ${_target})
+            target_link_libraries(${_target} PRIVATE
+                "-framework AudioToolbox" "-framework Foundation" "-framework Cocoa")
+        endif()
+    endforeach()
 endif()
 
-# 入力アセットの変更があるときのみ zip を再生成するようにする
-file(GLOB_RECURSE WEBVIEW_ASSETS CONFIGURE_DEPENDS
-    "${WEBVIEW_FILES_SOURCE_DIR}/**/*")
-
-add_custom_command(
-    OUTPUT "${TARGET_WEBVIEW_FILES_ZIP_PATH}"
-    COMMAND ${CMAKE_COMMAND} -E tar cvf
-            "${TARGET_WEBVIEW_FILES_ZIP_PATH}"
-            --format=zip
-            "${PUBLIC_PATH}"
-    DEPENDS ${WEBVIEW_ASSETS}
-    WORKING_DIRECTORY "${WORKING_DIRECTORY}"
-    COMMENT "Zipping WebView files (up-to-date aware)..."
-    VERBATIM
-)
-
-add_custom_target(ZipWebViewFiles
-    DEPENDS "${TARGET_WEBVIEW_FILES_ZIP_PATH}"
-)
-
-# ZIP プレフィックスは Prod 系コンフィグのみ定義
-cmake_path(GET PUBLIC_PATH FILENAME ZIPPED_FILES_PREFIX)
-target_compile_definitions(MixCompare PRIVATE
-    $<$<NOT:$<CONFIG:Debug>>:ZIPPED_FILES_PREFIX="${ZIPPED_FILES_PREFIX}/">
-)
-
-# WebUI ソースをバイナリデータとしてパッケージ（ターゲット自体は常に生成）
-juce_add_binary_data(WebViewFiles
-    HEADER_NAME WebViewFiles.h
-    NAMESPACE webview_files
-    SOURCES ${TARGET_WEBVIEW_FILES_ZIP_PATH}
-)
-add_dependencies(WebViewFiles ZipWebViewFiles)
-
-# 埋め込みライブラリのリンクは Prod 系コンフィグのときだけ有効
-target_link_libraries(MixCompare PRIVATE
-    $<$<NOT:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>>:WebViewFiles>
-)
-
-# Windows 固有の設定
-if(WIN32)
-    # Windows の冗長マクロ対策
-    target_compile_definitions(MixCompare PRIVATE
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
-    )
-    # UTF-8エンコーディングを強制
-    target_compile_options(MixCompare PRIVATE
-        /utf-8
-    )
-    target_link_libraries(MixCompare PRIVATE Dbghelp)
+# -----------------------------------------------------------------------------
+# AAX target には AAX_Export OBJECT library の .obj を直接食わせる必要がある
+# (INTERFACE → OBJECT の連鎖が MSBuild generator で .obj を伝播しない iPlug2 既知の制約)。
+# Phase 1 では AAX SDK 未配置のため AAX target は生成されないが、配置後に有効化される。
+# -----------------------------------------------------------------------------
+if(TARGET MixCompare-aax AND TARGET AAX_Export)
+    target_sources(MixCompare-aax PRIVATE $<TARGET_OBJECTS:AAX_Export>)
+    message(STATUS "[MixCompare] Wired AAX_Export object files into MixCompare-aax")
 endif()
-if(MSVC)
-    # 全ビルド構成で PDB を生成
-    foreach(wrapperTarget IN ITEMS MixCompare MixCompare_VST3 MixCompare_Standalone MixCompare_AAX)
-        if (TARGET ${wrapperTarget})
-            target_compile_options(${wrapperTarget} PRIVATE
-                $<$<CONFIG:Debug>:/Zi>
-                $<$<CONFIG:Release>:/Zi>
-                $<$<CONFIG:RelWithDebInfo>:/Zi>
-                $<$<CONFIG:MinSizeRel>:/Zi>
-            )
-            target_link_options(${wrapperTarget} PRIVATE
-                $<$<CONFIG:Debug>:/DEBUG:FULL>
-                $<$<CONFIG:Release>:/DEBUG:FULL>
-                $<$<CONFIG:RelWithDebInfo>:/DEBUG:FULL>
-                $<$<CONFIG:MinSizeRel>:/DEBUG:FULL>
+
+# -----------------------------------------------------------------------------
+# macOS: resources/web/ を各 bundle の Contents/Resources/web/ へ POST_BUILD コピー。
+# (Windows は RCDATA 埋め込みなので不要)
+# -----------------------------------------------------------------------------
+if(APPLE)
+    set(MIXCOMPARE_WEB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources/web")
+    foreach(_fmt vst3 clap aax au app)
+        set(_target "MixCompare-${_fmt}")
+        if(TARGET ${_target})
+            add_custom_command(TARGET ${_target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${MIXCOMPARE_WEB_DIR}"
+                    "$<TARGET_FILE_DIR:${_target}>/../Resources/web"
+                COMMENT "[MixCompare] Staging WebUI resources into ${_target} bundle Resources/web"
+                VERBATIM
             )
         endif()
     endforeach()
-
-    # Ogg Vorbis の C4703 をターゲット全体で抑止（安全のため各ラッパーターゲットにも付与）
-    foreach(wrapperTarget IN ITEMS MixCompare MixCompare_VST3 MixCompare_Standalone MixCompare_AAX)
-        if (TARGET ${wrapperTarget})
-            target_compile_options(${wrapperTarget} PRIVATE /wd4703)
-        endif()
-    endforeach()
 endif()
-
-
-
