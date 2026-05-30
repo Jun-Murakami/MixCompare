@@ -31,8 +31,12 @@ export function useNumberInputAdjust(
   inputRef: React.RefObject<HTMLElement | null>,
   options: NumberInputAdjustOptions,
 ) {
+  // wheel/pointer リスナーは下の effect で1回だけ購読するため、最新の options は
+  // ref 経由で参照する。ref 書き込みはレンダー中ではなくコミット後に行う。
   const optsRef = useRef<NumberInputAdjustOptions>(options);
-  optsRef.current = options;
+  useEffect(() => {
+    optsRef.current = options;
+  });
 
   useEffect(() => {
     const el = inputRef.current;

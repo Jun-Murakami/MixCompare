@@ -6,6 +6,7 @@ import { PlayArrow, Pause, SkipPrevious, SkipNext, Repeat, Clear as ClearIcon, S
 import { juceBridge } from '../bridge/juce';
 import { type TransportState, type TrackChangeData } from '../types';
 import { getToggleState, getSliderState } from 'juce-framework-frontend-mirror';
+import { useJuceStore } from '../juce/useJuceStore';
 
 const formatTime = (seconds: number): string => {
   const mins = Math.floor(seconds / 60);
@@ -52,14 +53,10 @@ export const Transport: React.FC = () => {
   const hostSyncCapableToggle = getToggleState('HOST_SYNC_CAPABLE');
   const isHostSync = !!hostSyncToggle?.getValue();
   // ネイティブのHOST_SYNC_CAPABLEを購読して有効/無効を切替（未到着時は一時的に有効）
-  const [isHostSyncCapable, setIsHostSyncCapable] = useState<boolean>(true);
-  useEffect(() => {
-    const st = hostSyncCapableToggle;
-    if (!st) return;
-    setIsHostSyncCapable(!!st.getValue());
-    const id = st.valueChangedEvent.addListener(() => setIsHostSyncCapable(!!st.getValue()));
-    return () => st.valueChangedEvent.removeListener(id);
-  }, [hostSyncCapableToggle]);
+  const isHostSyncCapable = useJuceStore(
+    hostSyncCapableToggle?.valueChangedEvent,
+    () => hostSyncCapableToggle?.getValue() ?? true
+  );
   const handlePlayPause = async () => {
     // 直前にHOST_SYNCがOFFへ切り替わった瞬間のクリックに備え、
     // 最新の同期状態をハンドラ実行時に直接参照して判定する。
@@ -195,10 +192,13 @@ export const Transport: React.FC = () => {
     if (isHostSync) return; // 同期中は無効
     const newPosition = value as number;
     setIsDragging(false);
-    setIsSeekPending(true);
-    isSeekPendingRef.current = true;
     setTempPosition(newPosition);
     tempPositionRef.current = newPosition;
+    // 既に目標位置にいる場合は pending に入らない（位置更新イベントが跨がず解除されないため）。
+    // 追従中の解除は transportUpdate / transportPositionUpdate リスナー側で行う。
+    const alreadyThere = Math.abs(transportState.position - newPosition) <= 0.01;
+    setIsSeekPending(!alreadyThere);
+    isSeekPendingRef.current = !alreadyThere;
 
     // 正規化シークパラメータに送信（0..1）
     const durationLocal = duration || 0;
@@ -214,24 +214,8 @@ export const Transport: React.FC = () => {
   const displayPosition = !currentItem ? 0 : (isDragging || isSeekPending ? tempPosition : transportState.position);
 
   useEffect(() => {
-    if (!isDragging && !isSeekPending) {
-      setTempPosition(transportState.position);
-    }
-  }, [transportState.position, isDragging, isSeekPending]);
-
-  useEffect(() => {
     isSeekPendingRef.current = isSeekPending;
   }, [isSeekPending]);
-
-  // シーク確定後、バックエンドの位置が追いついたら pending を解除
-  useEffect(() => {
-    if (isSeekPending) {
-      const eps = 0.01;
-      if (Math.abs(transportState.position - tempPosition) <= eps) {
-        setIsSeekPending(false);
-      }
-    }
-  }, [transportState.position, tempPosition, isSeekPending]);
 
   // ループ区間のマーク位置を計算
   const loopStartPercent = duration > 0 ? (transportState.loopStart / duration) * 100 : 0;

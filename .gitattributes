@@ -3,6 +3,12 @@
 #   eol=lf    : チェックアウト時も常に LF（OS やローカル設定に依存しない＝LF強制）
 * text=auto eol=lf
 
+# サブモジュールは独立した git リポジトリなので、親側の改行正規化（renormalize）の
+# 対象から完全に除外する。これを怠ると extras/Build 等の削除や全ファイルの CRLF↔LF
+# 書き換えが発生し、JUCE のビルドが壊れる（JUCEModuleSupport.cmake が見つからない等）。
+JUCE/**                   -text
+clap-juce-extensions/**   -text
+
 # バイナリは変換しない（現在追跡中の実バイナリは画像・アイコンのみ）
 *.png   binary
 *.ico   binary

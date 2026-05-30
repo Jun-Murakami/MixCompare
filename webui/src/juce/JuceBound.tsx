@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Jun Murakami
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { type SxProps, Slider, Checkbox, FormControl, InputLabel, MenuItem, Select, Box, Typography } from '@mui/material';
 // MUI Select の onChange コールバックが受け取るイベントの number 版（型不一致回避のため union で表現）
 type SelectNumberEvent =
   | React.ChangeEvent<Omit<HTMLInputElement, 'value'> & { value: number }>
   | (Event & { target: { value: number; name: string } });
 import { getSliderState, getToggleState, getComboBoxState } from 'juce-framework-frontend-mirror';
+import { useJuceStore } from './useJuceStore';
 
 type SliderProps = {
   identifier: string;
@@ -18,33 +19,19 @@ type SliderProps = {
 
 export const JuceBoundSlider: React.FC<SliderProps> = ({ identifier, label, orientation, sx, valueLabelDisplay }) => {
   const sliderState = getSliderState(identifier);
-  // Hooks は無条件に宣言する必要がある（早期 return の前に置く）。
-  // sliderState が未解決の初期レンダーでも安全な初期値を使い、実体が来たら useEffect で同期する。
-  const [value, setValue] = useState<number>(0);
-  const [properties, setProperties] = useState(sliderState?.properties);
-
-  useEffect(() => {
-    // sliderState がまだ無い場合は何もしない（Hooks 自体は無条件に呼ばれている）
-    if (!sliderState) return;
-    // 初回同期（実体が得られたら最新値/プロパティを反映）
-    setValue(sliderState.getNormalisedValue());
-    setProperties(sliderState.properties);
-    // 変更リスナーを登録して UI を更新
-    const vId = sliderState.valueChangedEvent.addListener(() => setValue(sliderState.getNormalisedValue()));
-    const pId = sliderState.propertiesChangedEvent.addListener(() => setProperties(sliderState.properties));
-    return () => {
-      sliderState.valueChangedEvent.removeListener(vId);
-      sliderState.propertiesChangedEvent.removeListener(pId);
-    };
-  }, [sliderState]);
+  // 外部ストア（JUCE State）の値/プロパティを購読。Hooks は早期 return より前に無条件で呼ぶ。
+  const value = useJuceStore(sliderState?.valueChangedEvent, () => sliderState?.getNormalisedValue() ?? 0);
+  const properties = useJuceStore(sliderState?.propertiesChangedEvent, () => sliderState?.properties);
 
   // ここで安全に早期 return（Hooks 以降なのでルールに抵触しない）
   if (!sliderState) return null;
 
   const handleChange = (_: Event, nv: number | number[]) => {
     const n = nv as number;
-    setValue(n);
     sliderState.setNormalisedValue(n);
+    // setNormalisedValue は backend へ emit するのみでローカルリスナーを発火しない。
+    // ドラッグ中の即時反映のためローカルに通知し、外部ストアの値を更新する。
+    sliderState.valueChangedEvent.callListeners(undefined);
   };
 
   const handleMouseDown = () => sliderState.sliderDragStarted();
@@ -86,29 +73,16 @@ type ToggleProps = {
 
 export const JuceBoundToggle: React.FC<ToggleProps> = ({ identifier, label }) => {
   const toggleState = getToggleState(identifier);
-  // Hooks は早期 return より前に無条件で呼び出す
-  const [checked, setChecked] = useState<boolean>(false);
-  const [properties, setProperties] = useState(toggleState?.properties);
-
-  useEffect(() => {
-    if (!toggleState) return;
-    // 初回同期
-    setChecked(toggleState.getValue());
-    setProperties(toggleState.properties);
-    // 変更監視
-    const vId = toggleState.valueChangedEvent.addListener(() => setChecked(toggleState.getValue()));
-    const pId = toggleState.propertiesChangedEvent.addListener(() => setProperties(toggleState.properties));
-    return () => {
-      toggleState.valueChangedEvent.removeListener(vId);
-      toggleState.propertiesChangedEvent.removeListener(pId);
-    };
-  }, [toggleState]);
+  // 外部ストア（JUCE State）を購読。Hooks は早期 return より前に無条件で呼ぶ。
+  const checked = useJuceStore(toggleState?.valueChangedEvent, () => toggleState?.getValue() ?? false);
+  const properties = useJuceStore(toggleState?.propertiesChangedEvent, () => toggleState?.properties);
 
   if (!toggleState) return null;
 
   const onChange = (_: React.ChangeEvent<HTMLInputElement>, val: boolean) => {
-    setChecked(val);
     toggleState.setValue(val);
+    // setValue は backend へ emit するのみのため、即時反映用にローカル通知する。
+    toggleState.valueChangedEvent.callListeners(undefined);
   };
 
   return (
@@ -126,31 +100,18 @@ type ComboProps = {
 
 export const JuceBoundCombo: React.FC<ComboProps> = ({ identifier, label }) => {
   const comboState = getComboBoxState(identifier);
-  // Hooks は早期 return より前に無条件で呼び出す
-  const [index, setIndex] = useState<number>(0);
-  const [properties, setProperties] = useState(comboState?.properties);
-
-  useEffect(() => {
-    if (!comboState) return;
-    // 初回同期
-    setIndex(comboState.getChoiceIndex());
-    setProperties(comboState.properties);
-    // 変更監視
-    const vId = comboState.valueChangedEvent.addListener(() => setIndex(comboState.getChoiceIndex()));
-    const pId = comboState.propertiesChangedEvent.addListener(() => setProperties(comboState.properties));
-    return () => {
-      comboState.valueChangedEvent.removeListener(vId);
-      comboState.propertiesChangedEvent.removeListener(pId);
-    };
-  }, [comboState]);
+  // 外部ストア（JUCE State）を購読。Hooks は早期 return より前に無条件で呼ぶ。
+  const index = useJuceStore(comboState?.valueChangedEvent, () => comboState?.getChoiceIndex() ?? 0);
+  const properties = useJuceStore(comboState?.propertiesChangedEvent, () => comboState?.properties);
 
   if (!comboState) return null;
 
   const onChange = (e: SelectNumberEvent) => {
     // union の両辺とも target.value は number なので安全に取り出す
     const i = (e as { target: { value: number } }).target.value;
-    setIndex(i);
     comboState.setChoiceIndex(i);
+    // setChoiceIndex は backend へ emit するのみのため、即時反映用にローカル通知する。
+    comboState.valueChangedEvent.callListeners(undefined);
   };
 
   const lbl = label || properties?.name || identifier;

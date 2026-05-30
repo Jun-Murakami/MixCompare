@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Jun Murakami
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Box, Slider, Input, Typography } from '@mui/material';
 import { styled, lighten, darken } from '@mui/material/styles';
 import { getSliderState } from 'juce-framework-frontend-mirror';
@@ -110,6 +110,13 @@ const StyledSlider = styled(Slider)(({ theme }) => {
   };
 });
 
+// wheel / drag 共通: 現在値と fine フラグから次の dB 刻みを決める（純粋関数）
+const stepForWheel = (current: number, fine: boolean): number => {
+  if (fine) return 0.1;
+  if (current <= -30) return 10; // -30dB 以下は 10dB 刻みで素早く
+  return 1.0;
+};
+
 // スタイル付きInput
 const StyledInput = styled(Input)(() => ({
   '& input': {
@@ -145,15 +152,16 @@ export const GainFader: React.FC<GainFaderProps> = ({
   // フェーダー全体の縦サイズ（px）。全体をコンパクトにするため約2/3へ縮小。
   // メーターの高さ(≈140px)と揃える。
   const SLIDER_HEIGHT = 140;
-  // JUCE パラメータ（存在しないIDの場合は null）
-  const sliderStateRef = useRef<ReturnType<typeof getSliderState> | null>(null);
-  if (parameterId && sliderStateRef.current === null) {
-    sliderStateRef.current = getSliderState(parameterId) || null;
-  }
+  // JUCE パラメータ（存在しないIDの場合は null）。parameterId から導出されるため
+  // レンダー中に ref を触らず useMemo で算出する（parameterId 変化にも追従）。
+  const sliderState = useMemo(
+    () => (parameterId ? getSliderState(parameterId) || null : null),
+    [parameterId]
+  );
 
   // ローカル dB 値（-120..0）
   const [localValue, setLocalValue] = useState<number>(() => {
-    const st = sliderStateRef.current;
+    const st = sliderState;
     if (st) {
       const n = st.getNormalisedValue();
       return n <= 0 ? -120 : n * 120 - 120;
@@ -174,7 +182,7 @@ export const GainFader: React.FC<GainFaderProps> = ({
   // 外部からの値の更新を反映（ドラッグ中は無視）
   useEffect(() => {
     // JUCE 直接バインド時: 値変更イベントを購読してローカル値を同期
-    const st = sliderStateRef.current;
+    const st = sliderState;
     if (!st) return;
     const listenerId = st.valueChangedEvent.addListener(() => {
       if (isDragging) return; // ドラッグ中はエコーを無視
@@ -186,7 +194,7 @@ export const GainFader: React.FC<GainFaderProps> = ({
     return () => {
       st.valueChangedEvent.removeListener(listenerId);
     };
-  }, [parameterId, isDragging]);
+  }, [sliderState, isDragging]);
 
   // フェーダーの対数カーブ設定
   // Cubaseに近い挙動を目指し、振幅aを指数でマッピングし
@@ -240,7 +248,7 @@ export const GainFader: React.FC<GainFaderProps> = ({
     setInputValue(db <= -120 ? '-∞' : db.toFixed(1));
     // dB → 正規化 0..1 へ変換し、JUCE へ反映
     const n = db <= -120 ? 0 : (db + 120) / 120;
-    sliderStateRef.current?.setNormalisedValue(n);
+    sliderState?.setNormalisedValue(n);
   };
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -260,7 +268,7 @@ export const GainFader: React.FC<GainFaderProps> = ({
     setLocalValue(db);
     setInputValue(db <= -120 ? '-∞' : db.toFixed(1));
     const n = db <= -120 ? 0 : (db + 120) / 120;
-    sliderStateRef.current?.setNormalisedValue(n);
+    sliderState?.setNormalisedValue(n);
   };
 
   const handleInputKeyDown = (event: React.KeyboardEvent) => {
@@ -272,7 +280,7 @@ export const GainFader: React.FC<GainFaderProps> = ({
   const handleDragStart = () => {
     setIsDragging(true);
     // JUCE へドラッグ開始を通知
-    sliderStateRef.current?.sliderDragStarted();
+    sliderState?.sliderDragStarted();
     onDragStart?.();
   };
 
@@ -281,26 +289,23 @@ export const GainFader: React.FC<GainFaderProps> = ({
     if (isDragging) {
       setIsDragging(false);
       // JUCE へドラッグ終了を通知
-      sliderStateRef.current?.sliderDragEnded();
+      sliderState?.sliderDragEnded();
     }
     onDragEnd?.();
   };
 
-  // 共通の値適用ヘルパー（UI state と JUCE の両方へ反映）
-  const applyDbValue = (db: number) => {
-    const clamped = Math.max(-120, Math.min(0, db));
-    setLocalValue(clamped);
-    setInputValue(clamped <= -120 ? '-∞' : clamped.toFixed(1));
-    const n = clamped <= -120 ? 0 : (clamped + 120) / 120;
-    sliderStateRef.current?.setNormalisedValue(n);
-  };
-
-  // wheel / drag 共通: 現在値と fine フラグから次の dB 刻みを決める
-  const stepForWheel = (current: number, fine: boolean): number => {
-    if (fine) return 0.1;
-    if (current <= -30) return 10; // -30dB 以下は 10dB 刻みで素早く
-    return 1.0;
-  };
+  // 共通の値適用ヘルパー（UI state と JUCE の両方へ反映）。
+  // wheel リスナーの effect が依存するため、sliderState 変化時のみ再生成する。
+  const applyDbValue = useCallback(
+    (db: number) => {
+      const clamped = Math.max(-120, Math.min(0, db));
+      setLocalValue(clamped);
+      setInputValue(clamped <= -120 ? '-∞' : clamped.toFixed(1));
+      const n = clamped <= -120 ? 0 : (clamped + 120) / 120;
+      sliderState?.setNormalisedValue(n);
+    },
+    [sliderState]
+  );
 
   // 修飾キー + ポインタ操作：
   //  Ctrl/Cmd + クリック      → defaultValue にリセット
@@ -312,13 +317,13 @@ export const GainFader: React.FC<GainFaderProps> = ({
     onReset: () => applyDbValue(defaultValue),
     onDragStart: () => {
       fineDragStartValueRef.current = localValueRef.current;
-      sliderStateRef.current?.sliderDragStarted();
+      sliderState?.sliderDragStarted();
     },
     onDragDelta: (deltaPx) => {
       // 1px = 0.1 dB。FabFilter 系の fine drag と同等レベルの感度。
       applyDbValue(fineDragStartValueRef.current + deltaPx * 0.1);
     },
-    onDragEnd: () => sliderStateRef.current?.sliderDragEnded(),
+    onDragEnd: () => sliderState?.sliderDragEnded(),
   });
 
   // ネイティブ wheel リスナー（passive: false）を登録して、スクロール抑止と細かなゲイン調整を実現
@@ -337,7 +342,7 @@ export const GainFader: React.FC<GainFaderProps> = ({
     return () => {
       el.removeEventListener('wheel', handleWheelNative as EventListener);
     };
-  }, [parameterId]);
+  }, [applyDbValue]);
 
   // 数値入力欄（dB）のホイール / 縦ドラッグ
   const inputElRef = useRef<HTMLInputElement | null>(null);
@@ -350,14 +355,14 @@ export const GainFader: React.FC<GainFaderProps> = ({
     },
     onDragStart: () => {
       inputDragStartValueRef.current = localValueRef.current;
-      sliderStateRef.current?.sliderDragStarted();
+      sliderState?.sliderDragStarted();
     },
     onDragDelta: (deltaY, fine) => {
       // 入力欄 drag: 1px = 1 dB（通常） / 0.1 dB（fine）
       const step = fine ? 0.1 : 1.0;
       applyDbValue(inputDragStartValueRef.current + deltaY * step);
     },
-    onDragEnd: () => sliderStateRef.current?.sliderDragEnded(),
+    onDragEnd: () => sliderState?.sliderDragEnded(),
   });
 
   // 目盛りの値と位置（下から上へのdB値）

@@ -102,7 +102,7 @@ bool TransportManager::isStopped() const
     if (!stateManager)
         return true;
         
-    return !stateManager->isPlaying() && stateManager->getPosition() == 0.0;
+    return !stateManager->isPlaying() && stateManager->getPosition() <= 0.0;
 }
 
 TransportManager::TransportState TransportManager::getState() const

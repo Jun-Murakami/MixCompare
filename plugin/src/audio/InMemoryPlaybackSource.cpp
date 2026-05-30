@@ -155,7 +155,7 @@ void InMemoryPlaybackSource::applyFades(juce::AudioBuffer<float>& buffer, int nu
             const float t = static_cast<float>(fadeOutRemain) / static_cast<float>(std::max(1, fadeSamples));
             g *= t; --fadeOutRemain;
         }
-        if (g != 1.0f)
+        if (! juce::exactlyEqual (g, 1.0f))
         {
             for (int ch = 0; ch < channels; ++ch)
                 buffer.getWritePointer(ch)[i] *= g;

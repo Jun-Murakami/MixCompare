@@ -77,12 +77,10 @@ juce_add_plugin(MixCompare
 # JUCE の共通ヘッダー(JuceHeader.h)を生成し、インクルードパスへ追加
 juce_generate_juce_header(MixCompare)
 
-# Linux ビルド時のみ CLAP ターゲットを生成（clap-juce-extensions 経由）
-if(UNIX AND NOT APPLE)
-    clap_juce_extensions_plugin(TARGET MixCompare
-        CLAP_ID "com.junmurakami.mixcompare"
-        CLAP_FEATURES audio-effect utility analyzer)
-endif()
+# CLAP ターゲット生成（clap-juce-extensions 経由・Windows / macOS / Linux 全て）
+clap_juce_extensions_plugin(TARGET MixCompare
+    CLAP_ID "com.junmurakami.mixcompare"
+    CLAP_FEATURES audio-effect utility analyzer)
 
 # ソースファイルの登録
 target_sources(MixCompare PRIVATE

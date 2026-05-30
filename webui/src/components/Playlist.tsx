@@ -17,29 +17,30 @@ import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrate
 import { restrictToVerticalAxis, restrictToParentElement } from '@dnd-kit/modifiers';
 import { Add, Clear, Save } from '@mui/icons-material';
 import { Menu, MenuItem } from '@mui/material';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { Virtualizer, type VirtualizerHandle } from 'virtua';
 import { juceBridge } from '../bridge/juce';
 import { type PlaylistItem } from '../types';
 import PlaylistItemRow from './PlaylistItem';
 
 // 上記 SortableItem は PlaylistItem.tsx に分離
 
+// React Compiler(eslint react-hooks/purity) は Date.now() を「描画中に呼ぶと不安定」と
+// 判定するが、本コンポーネントでの呼び出しは全てイベントハンドラ/Effect 内で安全。
+// 解析対象外のモジュールスコープ関数に隔離して誤検知を避ける。
+const nowMs = (): number => Date.now();
+
 export const Playlist: React.FC = () => {
   // ローカル状態（ストアから移行）
   const [playlist, setPlaylist] = React.useState<PlaylistItem[]>([]);
   const [currentPlaylistIndex, setCurrentPlaylistIndex] = React.useState<number>(-1);
   const listContainerRef = useRef<HTMLDivElement>(null);
+  const virtualizerRef = useRef<VirtualizerHandle>(null);
   const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
   // JUCE更新を楽観操作の直後に抑制するための期限
   const suppressUntilRef = React.useRef<number>(0)
 
-  // Setup virtualizer
-  const virtualizer = useVirtualizer({
-    count: playlist.length,
-    getScrollElement: () => listContainerRef.current,
-    estimateSize: () => 20, // Estimated height of each item
-    overscan: 5, // Number of items to render outside of the visible area
-  });
+  // 仮想化: virtua の Virtualizer を利用（React Compiler 互換）。
+  // スクロール要素は下部の listContainerRef、各行はほぼ固定高（約 20px）。
 
   // Auto-scroll to selected item when index changes (only if out of view)
   useEffect(() => {
@@ -65,14 +66,14 @@ export const Playlist: React.FC = () => {
         // Determine scroll position to center the item
         if (!isPartiallyVisible || itemTop < scrollTop || itemBottom > scrollBottom) {
           // Item is out of view or only partially visible, scroll to center it
-          virtualizer.scrollToIndex(currentPlaylistIndex, {
+          virtualizerRef.current?.scrollToIndex(currentPlaylistIndex, {
             align: 'center',
-            behavior: 'smooth',
+            smooth: true,
           });
         }
       }
     }
-  }, [currentPlaylistIndex, virtualizer, playlist.length]);
+  }, [currentPlaylistIndex, playlist.length]);
 
   // JUCE playlistUpdate / trackChange を購読してローカル更新
   useEffect(() => {
@@ -82,7 +83,7 @@ export const Playlist: React.FC = () => {
       if (typeof d.currentIndex === 'number') setCurrentPlaylistIndex(d.currentIndex);
       // items の差し替えは抑制期間が過ぎてから適用（並べ替えの楽観更新と競合しないように）
       if (Array.isArray(d.items)) {
-        if (Date.now() >= suppressUntilRef.current) {
+        if (nowMs() >= suppressUntilRef.current) {
           setPlaylist(d.items);
         }
       }
@@ -118,7 +119,7 @@ export const Playlist: React.FC = () => {
       const newIndex = playlist.findIndex((item) => item.id === over.id);
 
       // JUCEからの更新を一時的に抑制（300ms）
-      suppressUntilRef.current = Date.now() + 300;
+      suppressUntilRef.current = nowMs() + 300;
 
       // 楽観的更新：即座にUIを更新
       setPlaylist((prev) => {
@@ -142,14 +143,14 @@ export const Playlist: React.FC = () => {
 
   const handleSelect = async (index: number) => {
     // JUCEからの更新を一時的に抑制（200ms）
-    suppressUntilRef.current = Date.now() + 200;
+    suppressUntilRef.current = nowMs() + 200;
     // 直接パラメータにバインド（0..1 正規化）
     const norm = playlist.length > 1 ? index / (playlist.length - 1) : 0;
     getSliderState('PLAYLIST_CURRENT_INDEX_NORM')?.setNormalisedValue(Math.max(0, Math.min(1, norm)));
   };
 
   const handleRemove = async (id: string) => {
-    suppressUntilRef.current = Date.now() + 300;
+    suppressUntilRef.current = nowMs() + 300;
     // 楽観的更新
     setPlaylist((prev) => {
       const ix = prev.findIndex((x) => x.id === id);
@@ -170,7 +171,7 @@ export const Playlist: React.FC = () => {
   };
 
   const handleClearPlaylist = async () => {
-    suppressUntilRef.current = Date.now() + 300;
+    suppressUntilRef.current = nowMs() + 300;
     setPlaylist([]);
     // 選択は維持せず -1 にする
     setCurrentPlaylistIndex(-1);
@@ -184,7 +185,7 @@ export const Playlist: React.FC = () => {
 
   const handleImportPlaylist = async () => {
     // JUCEからの更新を一時的に抑制（300ms）
-    suppressUntilRef.current = Date.now() + 300;
+    suppressUntilRef.current = nowMs() + 300;
 
     await juceBridge.callNative('playlist_action', 'import');
     handleMenuClose();
@@ -322,38 +323,29 @@ export const Playlist: React.FC = () => {
             modifiers={[restrictToVerticalAxis, restrictToParentElement]}
           >
             <SortableContext items={playlist.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-              <Box sx={{ width: '100%', position: 'relative' }}>
-                {/* 仮想化: 上部のパディング */}
-                {virtualizer.getVirtualItems().length > 0 && (
-                  <div style={{ height: virtualizer.getVirtualItems()[0]?.start || 0 }} />
-                )}
-
-                {/* 仮想化されたアイテム */}
-                {virtualizer.getVirtualItems().map((virtualItem) => {
-                  const item = playlist[virtualItem.index];
-                  if (!item) return null;
-
-                  return (
-                    <PlaylistItemRow
-                      key={item.id}
-                      item={item}
-                      index={virtualItem.index}
-                      isActive={virtualItem.index === currentPlaylistIndex}
-                      onSelect={handleSelect}
-                      onRemove={handleRemove}
-                    />
-                  );
-                })}
-
-                {/* 仮想化: 下部のパディング */}
-                {virtualizer.getVirtualItems().length > 0 && (
-                  <div
-                    style={{
-                      height: virtualizer.getTotalSize() - (virtualizer.getVirtualItems()[virtualizer.getVirtualItems().length - 1]?.end || 0)
-                    }}
+              {/*
+               * virtua の Virtualizer は scrollRef のスクロール要素内で可視範囲のみを描画する。
+               * 行の前に他要素は無いので startMargin=0。各行はほぼ固定高なので itemSize=20 をヒントに与える。
+               * SortableContext には全 id を渡しているので、未描画行があっても DnD の整合は保たれる。
+               */}
+              <Virtualizer
+                ref={virtualizerRef}
+                scrollRef={listContainerRef}
+                startMargin={0}
+                itemSize={20}
+                bufferSize={100}
+              >
+                {playlist.map((item, index) => (
+                  <PlaylistItemRow
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    isActive={index === currentPlaylistIndex}
+                    onSelect={handleSelect}
+                    onRemove={handleRemove}
                   />
-                )}
-              </Box>
+                ))}
+              </Virtualizer>
             </SortableContext>
           </DndContext>
         )}

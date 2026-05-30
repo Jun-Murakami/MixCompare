@@ -13,7 +13,7 @@
  * 静的に import しても、コンポーネント自身は `VITE_RUNTIME === 'web'` のときだけレンダーされる。
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Box, CircularProgress, IconButton, Slider, ToggleButton, Tooltip, Typography } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import PauseIcon from '@mui/icons-material/Pause';
@@ -30,31 +30,27 @@ const formatTime = (sec: number): string => {
 };
 
 export const WebTransportBar: React.FC = () => {
-  // 初期状態は WebBridgeManager が preload 済みの sample.mp3 を反映。
-  // sourceLoaded を取りこぼした場合は getCurrentHostSource() から復元。
-  const initial = webAudioEngine.getCurrentHostSource();
+  // ホストソース（name/duration）は外部ストア。useSyncExternalStore で購読すると
+  // マウント時の取りこぼし対策（同期 setState）が不要になり、常に最新値を読める。
+  const subscribeSource = useCallback((onChange: () => void) => {
+    const k = webAudioEngine.addEventListener('sourceLoaded', onChange);
+    return () => webAudioEngine.removeEventListener(k);
+  }, []);
+  const sourceName = useSyncExternalStore(subscribeSource, () => webAudioEngine.getCurrentHostSource()?.name ?? 'sample.mp3');
+  const duration = useSyncExternalStore(subscribeSource, () => webAudioEngine.getCurrentHostSource()?.duration ?? 0);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [position, setPosition] = useState(0);
-  const [duration, setDuration] = useState(initial?.duration ?? 0);
   const [loopEnabled, setLoopEnabled] = useState(true);
   const [bypass, setBypass] = useState(false);
-  const [sourceName, setSourceName] = useState(initial?.name ?? 'sample.mp3');
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const draggedPosRef = useRef(0);
 
   useEffect(() => {
-    // 初期状態の取りこぼし対策 — マウント時に最新値を再取得
-    const cur = webAudioEngine.getCurrentHostSource();
-    if (cur) {
-      setSourceName(cur.name);
-      setDuration(cur.duration);
-    }
-
     const posKey = webAudioEngine.addEventListener('hostTransportPositionUpdate', (d) => {
       const m = d as { position: number; duration: number; isPlaying: boolean };
       if (!isDragging) setPosition(m.position);
-      if (m.duration > 0) setDuration(m.duration);
       setIsPlaying(m.isPlaying);
     });
     const trKey = webAudioEngine.addEventListener('hostTransportUpdate', (d) => {
@@ -62,10 +58,8 @@ export const WebTransportBar: React.FC = () => {
       setIsPlaying(m.isPlaying);
       setLoopEnabled(m.loopEnabled);
     });
-    const srcKey = webAudioEngine.addEventListener('sourceLoaded', (d) => {
-      const m = d as { name: string; duration: number };
-      setSourceName(m.name);
-      setDuration(m.duration);
+    // name/duration は useSyncExternalStore 側で反映。ここではロード完了の解除のみ。
+    const srcKey = webAudioEngine.addEventListener('sourceLoaded', () => {
       setIsLoading(false);
     });
     return () => {

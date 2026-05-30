@@ -1,10 +1,59 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Jun Murakami
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, Typography, Slider, Switch, FormControlLabel, Input } from '@mui/material';
 import { getSliderState, getToggleState } from 'juce-framework-frontend-mirror';
 import { useFineAdjustPointer } from '../hooks/useFineAdjustPointer';
 import { useNumberInputAdjust } from '../hooks/useNumberInputAdjust';
+
+// 周波数帯域に応じた wheel 1tick の増分を算出。fine フラグで 1/10 刻みへ。
+//  境界をまたぐ場合は次の帯域の最小刻みへスナップして自然な段階感を出す。（純粋関数）
+const wheelNextFreq = (current: number, direction: 1 | -1, fine: boolean): number => {
+  const round = (v: number, unit: number) => Math.round(v / unit) * unit;
+  if (current <= 300) {
+    if (fine) return current + direction;
+    const next = round(current + 10 * direction, 10);
+    return next > 300 && direction > 0 ? 320 : next;
+  }
+  if (current <= 500) {
+    if (fine) return current + 2 * direction;
+    const next = round(current + 20 * direction, 20);
+    if (next <= 300 && direction < 0) return 300;
+    if (next > 500 && direction > 0) return 550;
+    return next;
+  }
+  if (current <= 1000) {
+    if (fine) return round(current + 5 * direction, 5);
+    const next = round(current + 50 * direction, 50);
+    if (next <= 500 && direction < 0) return 500;
+    if (next > 1000 && direction > 0) return 1100;
+    return next;
+  }
+  if (current <= 2000) {
+    if (fine) return round(current + 10 * direction, 10);
+    const next = round(current + 100 * direction, 100);
+    if (next <= 1000 && direction < 0) return 1000;
+    if (next > 2000 && direction > 0) return 2500;
+    return next;
+  }
+  if (current <= 5000) {
+    if (fine) return round(current + 50 * direction, 50);
+    const next = round(current + 500 * direction, 500);
+    if (next <= 2000 && direction < 0) return 2000;
+    if (next > 5000 && direction > 0) return 6000;
+    return next;
+  }
+  if (fine) return round(current + 100 * direction, 100);
+  const next = round(current + 1000 * direction, 1000);
+  if (next <= 5000 && direction < 0) return 5000;
+  return next;
+};
+
+// 周波数の表示文字列（1kHz 以上は "x.xk"、未満は整数 Hz）。
+const formatFreqDisplay = (freq: number): string => {
+  if (freq >= 1000) return (Math.floor(freq / 100) / 10).toFixed(1) + 'k';
+  return Math.floor(freq).toString();
+};
 
 export const Controls: React.FC = () => {
   // JUCE 直接バインディング（LPF周り）
@@ -87,56 +136,17 @@ export const Controls: React.FC = () => {
     toggleState?.setValue(enabled);
   };
 
-  // 共通の値適用（UI と JUCE へ反映）
-  const applyFreq = (freq: number) => {
-    const clamped = Math.max(20, Math.min(20000, freq));
-    setLpfFreq(clamped);
-    const normLinear = (clamped - 20) / (20000 - 20);
-    sliderState?.setNormalisedValue(Math.max(0, Math.min(1, normLinear)));
-  };
-
-  // 周波数帯域に応じた wheel 1tick の増分を算出。fine フラグで 1/10 刻みへ。
-  //  境界をまたぐ場合は次の帯域の最小刻みへスナップして自然な段階感を出す。
-  const wheelNextFreq = (current: number, direction: 1 | -1, fine: boolean): number => {
-    const round = (v: number, unit: number) => Math.round(v / unit) * unit;
-    if (current <= 300) {
-      if (fine) return current + direction;
-      const next = round(current + 10 * direction, 10);
-      return next > 300 && direction > 0 ? 320 : next;
-    }
-    if (current <= 500) {
-      if (fine) return current + 2 * direction;
-      const next = round(current + 20 * direction, 20);
-      if (next <= 300 && direction < 0) return 300;
-      if (next > 500 && direction > 0) return 550;
-      return next;
-    }
-    if (current <= 1000) {
-      if (fine) return round(current + 5 * direction, 5);
-      const next = round(current + 50 * direction, 50);
-      if (next <= 500 && direction < 0) return 500;
-      if (next > 1000 && direction > 0) return 1100;
-      return next;
-    }
-    if (current <= 2000) {
-      if (fine) return round(current + 10 * direction, 10);
-      const next = round(current + 100 * direction, 100);
-      if (next <= 1000 && direction < 0) return 1000;
-      if (next > 2000 && direction > 0) return 2500;
-      return next;
-    }
-    if (current <= 5000) {
-      if (fine) return round(current + 50 * direction, 50);
-      const next = round(current + 500 * direction, 500);
-      if (next <= 2000 && direction < 0) return 2000;
-      if (next > 5000 && direction > 0) return 6000;
-      return next;
-    }
-    if (fine) return round(current + 100 * direction, 100);
-    const next = round(current + 1000 * direction, 1000);
-    if (next <= 5000 && direction < 0) return 5000;
-    return next;
-  };
+  // 共通の値適用（UI と JUCE へ反映）。wheel リスナーの effect が依存するため
+  // sliderState 変化時のみ再生成する。
+  const applyFreq = useCallback(
+    (freq: number) => {
+      const clamped = Math.max(20, Math.min(20000, freq));
+      setLpfFreq(clamped);
+      const normLinear = (clamped - 20) / (20000 - 20);
+      sliderState?.setNormalisedValue(Math.max(0, Math.min(1, normLinear)));
+    },
+    [sliderState]
+  );
 
   // LPFスライダー用のネイティブ wheel リスナー（passive: false）
   useEffect(() => {
@@ -153,7 +163,7 @@ export const Controls: React.FC = () => {
     return () => {
       el.removeEventListener('wheel', handleWheelNative as EventListener);
     };
-  }, [sliderState]);
+  }, [applyFreq]);
 
   // 修飾キー + ポインタ操作：
   //  Ctrl/Cmd + クリック      → デフォルト値 120 Hz へリセット
@@ -199,17 +209,9 @@ export const Controls: React.FC = () => {
     onDragEnd: () => sliderState?.sliderDragEnded(),
   });
 
-  // 入力値の初期化と同期
-  useEffect(() => {
-    if (!isEditing) {
-      if (lpfFreq >= 1000) {
-        const kValue = Math.floor(lpfFreq / 100) / 10;
-        setInputValue(kValue.toFixed(1) + 'k');
-      } else {
-        setInputValue(Math.floor(lpfFreq).toString());
-      }
-    }
-  }, [lpfFreq, isEditing]);
+  // 入力欄の表示値。編集中はユーザー入力（inputValue）を、非編集時は lpfFreq から
+  // レンダー時に導出した整形文字列を表示する（派生値を useEffect で同期しない）。
+  const displayValue = isEditing ? inputValue : formatFreqDisplay(lpfFreq);
 
   // JUCE からの値更新を購読してローカル表示へ反映
   useEffect(() => {
@@ -268,14 +270,7 @@ export const Controls: React.FC = () => {
       const normLinear = (freq - 20) / (20000 - 20);
       sliderState?.setNormalisedValue(Math.max(0, Math.min(1, normLinear)));
     }
-
-    // 表示を更新（Hz単位は別表示なので数値のみ）
-    if (lpfFreq >= 1000) {
-      const kValue = Math.floor(lpfFreq / 100) / 10;
-      setInputValue(kValue.toFixed(1) + 'k');
-    } else {
-      setInputValue(Math.floor(lpfFreq).toString());
-    }
+    // 非編集時の表示は displayValue が lpfFreq から導出するため、ここでの再整形は不要。
   };
 
   // Enterキーで確定
@@ -321,7 +316,7 @@ export const Controls: React.FC = () => {
           <Input
             className='block-host-shortcuts'
             inputRef={inputElRef}
-            value={inputValue}
+            value={displayValue}
             onChange={handleInputChange}
             onBlur={handleInputBlur}
             onFocus={handleInputFocus}

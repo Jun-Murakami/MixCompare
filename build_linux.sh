@@ -36,6 +36,20 @@ if [[ -z "${TARGET:-}" ]]; then
     exit 1
 fi
 
+# WebUI（Vite）は埋め込み元 plugin/ui/public をビルド出力先にしている（webui/vite.config.ts の outDir）。
+# Release 系コンフィグは plugin/ui/public を zip 化して juce_add_binary_data で埋め込むため、
+# C++ ビルド前に必ず webui を作り直す。これを省くと UI 変更がバイナリに反映されず
+# 「直したのに挙動が変わらない」状態になる（実際に発生）。Debug は localhost:5173 直読みのため不要。
+if [[ "$CONFIG" != "Debug" ]]; then
+    echo "=== Build WebUI: vite build -> plugin/ui/public ==="
+    if [[ ! -d webui/node_modules ]]; then
+        echo "  node_modules が無いため npm ci を実行..."
+        ( cd webui && npm ci )
+    fi
+    ( cd webui && npm run build )
+    echo
+fi
+
 echo "=== Configure: ${TARGET} (${CONFIG}) -> ${BUILD_DIR}/ ==="
 cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE="$CONFIG"
 

@@ -11,24 +11,31 @@ import {
   TextField,
 } from '@mui/material';
 
-import { useDialogStore } from '../store/dialogStore';
+import { useDialogStore, type DialogOptions } from '../store/dialogStore';
 
 export const GlobalDialog: React.FC = () => {
-  const { isOpen, options, handleClose } = useDialogStore();
-
-  // 入力モード用のローカル状態
-  // - options 切替ごとに defaultValue を初期反映
-  const [inputValue, setInputValue] = React.useState('');
-  const [inputError, setInputError] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    if (!options) return;
-    const initial = options.input?.defaultValue ?? '';
-    setInputValue(initial);
-    setInputError(null);
-  }, [options]);
+  const { isOpen, options, handleClose, dialogId } = useDialogStore();
 
   if (!options) return null;
+
+  // 入力状態は DialogBody が保持する。ダイアログを開くたびに変わる dialogId を
+  // key に渡すことで再マウントし、defaultValue を初期値として反映する
+  // （options 変化を useEffect で監視して setState する必要がない）。
+  return (
+    <DialogBody key={dialogId} options={options} isOpen={isOpen} handleClose={handleClose} />
+  );
+};
+
+interface DialogBodyProps {
+  options: DialogOptions;
+  isOpen: boolean;
+  handleClose: (result: string | null) => void;
+}
+
+const DialogBody: React.FC<DialogBodyProps> = ({ options, isOpen, handleClose }) => {
+  // 入力モード用のローカル状態。key による再マウントで defaultValue が初期反映される。
+  const [inputValue, setInputValue] = React.useState(options.input?.defaultValue ?? '');
+  const [inputError, setInputError] = React.useState<string | null>(null);
 
   // 入力モードかどうか
   const isInputMode = Boolean(options.input);

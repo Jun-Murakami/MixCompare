@@ -211,7 +211,7 @@ inline bool ValueTreeHelpers::convertVar<bool>(const juce::var& value, bool defa
     if (value.isInt() || value.isInt64())
         return static_cast<int>(value) != 0;
     if (value.isDouble())
-        return static_cast<double>(value) != 0.0;
+        return ! juce::exactlyEqual (static_cast<double>(value), 0.0);
     return defaultValue;
 }
 

@@ -428,35 +428,20 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
     // リサイズ可能に設定（プラグイン・スタンドアロン共通）
     setResizable(true, true);
     setResizeLimits(392, 610, 2560, 1440);
-
+    
     // リサイズ制約を設定
     resizerConstraints.setMinimumSize(392, 610);
     resizerConstraints.setMaximumSize(2560, 1440);
-
-    // CLAP 版だけリサイズ機能そのものを止める。setResizeLimits が host 側の resizable を
-    //  自動再設定してしまうので、必ず setResizeLimits の後で setResizable(false, false) を
-    //  呼ぶ。JUCE 内蔵 corner resizer の生成もここで抑止される。
-    const bool runningAsClap =
-        audioProcessor.wrapperType == juce::AudioProcessor::wrapperType_Undefined;
-    if (runningAsClap)
-        setResizable(false, false);
-
-    // リサイズグリッパー（右下の角に表示される三角形のハンドル）を作成。
-    //  CLAP 版では生成しない。juce::ResizableCornerComponent::hitTest が
-    //  Component::ignoresMouseClicksFlag を参照しない override なので、`setInterceptsMouseClicks`
-    //  だけでは triangle 領域の hit を抑えられないため、生成自体を回避する。
-    //  ハンドルの見た目は WebUI 側の `#resizeHandle::after` CSS が引き続き描画する。
-    if (! runningAsClap)
-    {
-        resizer = std::make_unique<juce::ResizableCornerComponent>(this, &resizerConstraints);
-        addAndMakeVisible(resizer.get());
-        resizer->setAlwaysOnTop(true);
-
-        // グリッパーのサイズを設定
-        const int gripperSize = 24;
-        resizer->setBounds(getWidth() - gripperSize, getHeight() - gripperSize, gripperSize, gripperSize);
-        resizer->toFront(true);  // 最前面に配置
-    }
+    
+    // リサイズグリッパー（右下の角に表示される三角形のハンドル）を作成
+    resizer = std::make_unique<juce::ResizableCornerComponent>(this, &resizerConstraints);
+    addAndMakeVisible(resizer.get());
+    resizer->setAlwaysOnTop(true);
+    
+    // グリッパーのサイズを設定
+    const int gripperSize = 24;
+    resizer->setBounds(getWidth() - gripperSize, getHeight() - gripperSize, gripperSize, gripperSize);
+    resizer->toFront(true);  // 最前面に配置
     
     // リサイズボーダーの幅を広げる
     if (auto* resizeConstrainer = getConstrainer())
@@ -1296,18 +1281,21 @@ void MixCompare3AudioProcessorEditor::handlePlaylistAction(
 
 // 旧: handleTransportAction は APVTS 直結へ移行済みのため削除
 
+// WebUI の設計サイズ（すべて WebView の CSS ピクセル基準）。
+//  実際の論理 px / 物理 px へは apply_layout / resizeBegin で確定する ratio を掛けて換算する。
+namespace {
+    constexpr int kDesignInitW = 392;
+    constexpr int kDesignInitH = 650;
+    constexpr int kDesignMinW  = 392;
+    constexpr int kDesignMinH  = 610;
+    constexpr int kDesignMaxW  = 2560;
+    constexpr int kDesignMaxH  = 1440;
+}
+
 void MixCompare3AudioProcessorEditor::handleWindowAction(
     const juce::Array<juce::var>& args,
     juce::WebBrowserComponent::NativeFunctionCompletion completion)
 {
-    // CLAP 版ではリサイズハンドルの機能を一律無効化する（見た目は残す）。
-    //  clap-juce-extensions は wrapperType を上書きしないので Undefined のままになる。
-    if (audioProcessor.wrapperType == juce::AudioProcessor::wrapperType_Undefined)
-    {
-        completion(juce::var{ false });
-        return;
-    }
-
     if (args.size() < 1)
     {
         completion(juce::var{ false });
@@ -1316,11 +1304,61 @@ void MixCompare3AudioProcessorEditor::handleWindowAction(
 
     const juce::String action = args[0].toString();
 
+    if (action == "resizeBegin" && args.size() >= 3)
+    {
+        // ドラッグ開始時、サイズが安定している瞬間に CSS px → 論理 px の換算比率を 1 回だけ確定。
+        //  ratio = getWidth()/innerWidth は数学的に「論理px / CSS px」(≒ devicePixelRatio/peerScale)
+        //  に一致する。確定後は次の resizeBegin まで固定で使う（毎フレーム再計算すると発散するため）。
+        const double cssW = (double)args[1];
+        const double cssH = (double)args[2];
+        webResizeRatioW = (cssW > 0.0) ? (double)getWidth()  / cssW : 1.0;
+        webResizeRatioH = (cssH > 0.0) ? (double)getHeight() / cssH : 1.0;
+        completion(juce::var{ true });
+        return;
+    }
+
+    if (action == "apply_layout" && args.size() >= 3)
+    {
+        // WebUI 読み込み完了時に、現在の innerWidth/innerHeight(CSS px) を受け取り、
+        //  ratio = getWidth()/innerWidth（=「論理px / CSS px」≒ devicePixelRatio / ホスト総スケール）を確定。
+        //  これは WebView が拾う「真の表示倍率」を反映する。ホストが分数スケーリングを誤判定して
+        //  間違った総スケールでウィンドウを作っても、ratio 経由で設計 CSS 値どおりの見た目に合わせられる。
+        //  設計値（CSS px）: 初期 392x650 / 最小 392x610 / 最大 2560x1440。
+        const double cssW = (double)args[1];
+        const double cssH = (double)args[2];
+        webResizeRatioW = (cssW > 0.0) ? (double)getWidth()  / cssW : 1.0;
+        webResizeRatioH = (cssH > 0.0) ? (double)getHeight() / cssH : 1.0;
+
+        const int minW = juce::roundToInt(kDesignMinW * webResizeRatioW);
+        const int minH = juce::roundToInt(kDesignMinH * webResizeRatioH);
+        const int maxW = juce::roundToInt(kDesignMaxW * webResizeRatioW);
+        const int maxH = juce::roundToInt(kDesignMaxH * webResizeRatioH);
+
+        // ホストへ報告する最小/最大も ratio 換算後の論理 px に合わせる（黒余白・過大窓の防止）。
+        setResizeLimits(minW, minH, maxW, maxH);
+        resizerConstraints.setMinimumSize(minW, minH);
+        resizerConstraints.setMaximumSize(maxW, maxH);
+
+        // 初期サイズは設計 CSS（392x650）に一致させる。多重適用を避けるため初回のみ。
+        if (!initialLayoutApplied)
+        {
+            initialLayoutApplied = true;
+            setSize(juce::roundToInt(kDesignInitW * webResizeRatioW),
+                    juce::roundToInt(kDesignInitH * webResizeRatioH));
+        }
+        completion(juce::var{ true });
+        return;
+    }
+
     if (action == "resizeTo" && args.size() >= 3)
     {
-        const int w = juce::roundToInt((double)args[1]);
-        const int h = juce::roundToInt((double)args[2]);
-        setSize(w, h);
+        // WebUI から来る w,h は WebView の CSS ピクセル。先に CSS 空間で最小/最大にクランプし、
+        //  そのあと固定比率(resizeBegin / apply_layout で確定)を掛けて論理 px へ換算する。
+        //  （CSS でクランプしないと ratio≠1 の環境で最小値が論理px基準にずれる）。
+        const double cssW = juce::jlimit<double>(kDesignMinW, kDesignMaxW, (double)args[1]);
+        const double cssH = juce::jlimit<double>(kDesignMinH, kDesignMaxH, (double)args[2]);
+        setSize(juce::roundToInt(cssW * webResizeRatioW),
+                juce::roundToInt(cssH * webResizeRatioH));
         completion(juce::var{ true });
         return;
     }

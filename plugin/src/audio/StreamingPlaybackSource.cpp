@@ -189,7 +189,7 @@ void StreamingPlaybackSource::applyFades(juce::AudioBuffer<float>& buffer, int n
             --fadeOutRemain;
         }
 
-        if (gain != 1.0f)
+        if (! juce::exactlyEqual (gain, 1.0f))
         {
             for (int ch = 0; ch < channels; ++ch)
             {

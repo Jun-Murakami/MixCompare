@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Jun Murakami
-import React, { useCallback, useRef } from 'react';
+import React from 'react';
 
 export interface FineAdjustPointerOptions {
   /** Ctrl/Cmd + クリック（移動なし）でリセット。Shift のみのクリックでは呼ばれない */
@@ -32,10 +32,9 @@ export interface FineAdjustPointerOptions {
 //  - 累積 px は caller 側で wheelStepFine 相当の係数を掛けて値空間へ変換する。
 //
 export function useFineAdjustPointer(options: FineAdjustPointerOptions) {
-  const optsRef = useRef<FineAdjustPointerOptions>(options);
-  optsRef.current = options;
-
-  return useCallback((e: React.PointerEvent) => {
+  // DOM の onPointerDownCapture に渡すだけなのでコールバック識別子の安定化は不要。
+  // options を直接クロージャで捉える（ドラッグ中は pointerdown 時点の値で一貫させる）。
+  return (e: React.PointerEvent) => {
     const ctrl = e.ctrlKey || e.metaKey;
     const shift = e.shiftKey;
     if (!ctrl && !shift) return;
@@ -48,8 +47,8 @@ export function useFineAdjustPointer(options: FineAdjustPointerOptions) {
     const startY = e.clientY;
     const pointerId = e.pointerId;
     let moved = false;
-    const threshold = optsRef.current.moveThreshold ?? 3;
-    const orientation = optsRef.current.orientation ?? 'vertical';
+    const threshold = options.moveThreshold ?? 3;
+    const orientation = options.orientation ?? 'vertical';
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
@@ -57,11 +56,11 @@ export function useFineAdjustPointer(options: FineAdjustPointerOptions) {
       const dy = ev.clientY - startY;
       if (!moved && Math.hypot(dx, dy) >= threshold) {
         moved = true;
-        optsRef.current.onDragStart();
+        options.onDragStart();
       }
       if (moved) {
         const delta = orientation === 'vertical' ? -dy : dx;
-        optsRef.current.onDragDelta(delta);
+        options.onDragDelta(delta);
       }
     };
 
@@ -69,17 +68,17 @@ export function useFineAdjustPointer(options: FineAdjustPointerOptions) {
       if (ev.pointerId !== pointerId) return;
       cleanup();
       if (moved) {
-        optsRef.current.onDragEnd();
+        options.onDragEnd();
       } else if (ctrl) {
         // Ctrl/Cmd クリック（移動なし）のみリセット。Shift のみは no-op。
-        optsRef.current.onReset();
+        options.onReset();
       }
     };
 
     const onCancel = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       cleanup();
-      if (moved) optsRef.current.onDragEnd();
+      if (moved) options.onDragEnd();
     };
 
     const cleanup = () => {
@@ -91,5 +90,5 @@ export function useFineAdjustPointer(options: FineAdjustPointerOptions) {
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onCancel, true);
-  }, []);
+  };
 }

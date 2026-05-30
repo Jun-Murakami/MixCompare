@@ -19,6 +19,10 @@ const SCALE_BOTTOM_PAD = 12; // 下ラベル用の余白
 const SCALE_CANVAS_HEIGHT = METER_HEIGHT + SCALE_TOP_PAD + SCALE_BOTTOM_PAD;
 const MIN_DB = -60; // 表示下限（dBFS）
 
+// dB を表示範囲 [MIN_DB, 0] にクランプ / 整形する純粋関数
+const clampDb = (db: number): number => Math.max(MIN_DB, Math.min(0, db));
+const formatDb = (db: number): string => (db <= MIN_DB ? '-∞' : clampDb(db).toFixed(1));
+
 // 視覚的な非線形スケール。
 // dB値(-60..0) → 0..1 に正規化した値 t に対し、u = t^k を用いる。
 // 画面中央(u=0.5)が TARGET_DB_AT_MID になるように k を自動算出する。
@@ -271,8 +275,6 @@ export const VUMeter: React.FC = () => {
   // - TruePeak（受信時は truePeakLeft/Right）を基準に数値をホールド表示
   // - 受信がない場合は通常レベルにフォールバック
   // - リセットはラベルのクリックで LR 同時に -∞（MIN_DB）へ戻す
-  const clampDb = (db: number): number => Math.max(MIN_DB, Math.min(0, db));
-  const formatDb = (db: number): string => (db <= MIN_DB ? '-∞' : clampDb(db).toFixed(1));
 
   // HOST・PLAYLIST それぞれの L/R 保持値
   const [hostPeak, setHostPeak] = useState<{ left: number; right: number }>({ left: MIN_DB, right: MIN_DB });
@@ -282,42 +284,9 @@ export const VUMeter: React.FC = () => {
   // const [hostMomentaryHold, setHostMomentaryHold] = useState<number>(-70.0);
   // const [playlistMomentaryHold, setPlaylistMomentaryHold] = useState<number>(-70.0);
 
-  // 入力レベルが上がった時のみ保持値を更新（dB は 0 に近いほど大きい）
-  useEffect(() => {
-    const l = meterDisplayMode === 'peak' ? hostMeterLevels.truePeakLeft ?? hostMeterLevels.left : hostMeterLevels.left;
-    const r = meterDisplayMode === 'peak' ? hostMeterLevels.truePeakRight ?? hostMeterLevels.right : hostMeterLevels.right;
-    setHostPeak((prev) => {
-      const nextLeft = Math.max(prev.left, clampDb(l));
-      const nextRight = Math.max(prev.right, clampDb(r));
-      if (nextLeft === prev.left && nextRight === prev.right) return prev;
-      return { left: nextLeft, right: nextRight };
-    });
-  }, [
-    meterDisplayMode,
-    hostMeterLevels.left,
-    hostMeterLevels.right,
-    hostMeterLevels.truePeakLeft,
-    hostMeterLevels.truePeakRight,
-  ]);
-
-  useEffect(() => {
-    const l =
-      meterDisplayMode === 'peak' ? playlistMeterLevels.truePeakLeft ?? playlistMeterLevels.left : playlistMeterLevels.left;
-    const r =
-      meterDisplayMode === 'peak' ? playlistMeterLevels.truePeakRight ?? playlistMeterLevels.right : playlistMeterLevels.right;
-    setPlaylistPeak((prev) => {
-      const nextLeft = Math.max(prev.left, clampDb(l));
-      const nextRight = Math.max(prev.right, clampDb(r));
-      if (nextLeft === prev.left && nextRight === prev.right) return prev;
-      return { left: nextLeft, right: nextRight };
-    });
-  }, [
-    meterDisplayMode,
-    playlistMeterLevels.left,
-    playlistMeterLevels.right,
-    playlistMeterLevels.truePeakLeft,
-    playlistMeterLevels.truePeakRight,
-  ]);
+  // ピークホールドは、レベルを更新する meterUpdate リスナー内で同時に max 更新する
+  // （派生値を別の useEffect で監視・setState しない）。peak モードでは left/right は
+  // 既に truePeak が入るため、保持入力は常に left/right を使えばよい。
 
   // JUCE からのメーター更新を直接購読
   useEffect(() => {
@@ -325,56 +294,86 @@ export const VUMeter: React.FC = () => {
       const m = data as MeterUpdateData;
       if (typeof m.meteringMode === 'number') setMeteringModeIndex(m.meteringMode);
       if (m.host) {
+        let hl: number;
+        let hr: number;
         if (m.meteringMode === 2 && m.host.momentary !== undefined) {
+          hl = m.host.momentary ?? -60;
+          hr = m.host.momentary ?? -60;
           setHostMeterLevels({
-            left: m.host.momentary ?? -60,
-            right: m.host.momentary ?? -60,
+            left: hl,
+            right: hr,
             truePeakLeft: m.host.truePeakLeft,
             truePeakRight: m.host.truePeakRight,
             momentary: m.host.momentary,
             momentaryHold: m.host.momentaryHold,
           });
         } else if (m.meteringMode === 0) {
+          hl = m.host.truePeakLeft ?? -60;
+          hr = m.host.truePeakRight ?? -60;
           setHostMeterLevels({
-            left: m.host.truePeakLeft ?? -60,
-            right: m.host.truePeakRight ?? -60,
+            left: hl,
+            right: hr,
             truePeakLeft: m.host.truePeakLeft,
             truePeakRight: m.host.truePeakRight,
           });
         } else {
+          hl = m.host.rmsLeft ?? -60;
+          hr = m.host.rmsRight ?? -60;
           setHostMeterLevels({
-            left: m.host.rmsLeft ?? -60,
-            right: m.host.rmsRight ?? -60,
+            left: hl,
+            right: hr,
             truePeakLeft: m.host.truePeakLeft,
             truePeakRight: m.host.truePeakRight,
           });
         }
+        // ピークホールド（max）をレベル更新と同じ箇所で更新する
+        setHostPeak((prev) => {
+          const nextLeft = Math.max(prev.left, clampDb(hl));
+          const nextRight = Math.max(prev.right, clampDb(hr));
+          if (nextLeft === prev.left && nextRight === prev.right) return prev;
+          return { left: nextLeft, right: nextRight };
+        });
       }
       if (m.playlist) {
+        let pl: number;
+        let pr: number;
         if (m.meteringMode === 2 && m.playlist.momentary !== undefined) {
+          pl = m.playlist.momentary ?? -60;
+          pr = m.playlist.momentary ?? -60;
           setPlaylistMeterLevels({
-            left: m.playlist.momentary ?? -60,
-            right: m.playlist.momentary ?? -60,
+            left: pl,
+            right: pr,
             truePeakLeft: m.playlist.truePeakLeft,
             truePeakRight: m.playlist.truePeakRight,
             momentary: m.playlist.momentary,
             momentaryHold: m.playlist.momentaryHold,
           });
         } else if (m.meteringMode === 0) {
+          pl = m.playlist.truePeakLeft ?? -60;
+          pr = m.playlist.truePeakRight ?? -60;
           setPlaylistMeterLevels({
-            left: m.playlist.truePeakLeft ?? -60,
-            right: m.playlist.truePeakRight ?? -60,
+            left: pl,
+            right: pr,
             truePeakLeft: m.playlist.truePeakLeft,
             truePeakRight: m.playlist.truePeakRight,
           });
         } else {
+          pl = m.playlist.rmsLeft ?? -60;
+          pr = m.playlist.rmsRight ?? -60;
           setPlaylistMeterLevels({
-            left: m.playlist.rmsLeft ?? -60,
-            right: m.playlist.rmsRight ?? -60,
+            left: pl,
+            right: pr,
             truePeakLeft: m.playlist.truePeakLeft,
             truePeakRight: m.playlist.truePeakRight,
           });
         }
+        // ピークホールド（max）をレベル更新と同じ箇所で更新する
+        setPlaylistPeak((prev) => {
+          const nextLeft = Math.max(prev.left, clampDb(pl));
+          const nextRight = Math.max(prev.right, clampDb(pr));
+          if (nextLeft === prev.left && nextRight === prev.right) return prev;
+          return { left: nextLeft, right: nextRight };
+        });
       }
     });
     return () => {

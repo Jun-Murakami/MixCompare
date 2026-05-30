@@ -40,6 +40,9 @@ function App() {
   useHostShortcutForwarding();
   useGlobalZoomGuard();
   const dragState = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+  // resizeBegin（比率確定）の完了 Promise。最初の resizeTo はこれの解決を待ってから送る
+  //  → 比率確定前に resizeTo が処理されて一度だけジャンプする競合を防ぐ。
+  const beginReady = useRef<Promise<unknown> | null>(null);
 
   // Web デモ専用ドロワー: viewport >= 1200px で常時表示。カードと被らないよう右パディングを確保。
   const wideDrawerDocked = useMediaQuery(MENU_WIDE_QUERY) && isWebMode;
@@ -111,29 +114,43 @@ function App() {
       pumpResize();
     };
     const safety = window.setTimeout(done, 200); // 完了応答が来なくてもフリーズしない安全策
-    void juceBridge.callNative('window_action', 'resizeTo', s.w, s.h).then(() => {
-      window.clearTimeout(safety);
-      done();
-    });
+    // s.w/s.h は WebView の CSS ピクセル。論理 px への換算比率は resizeBegin で開始時に
+    //  確定済みなので、ここでは CSS サイズだけを渡す（native が固定比率を掛けて setSize する）。
+    //  resizeBegin の完了を待ってから送ることで、比率確定前に resizeTo が処理される競合を防ぐ。
+    const begin = beginReady.current ?? Promise.resolve();
+    void begin
+      .then(() => juceBridge.callNative('window_action', 'resizeTo', s.w, s.h))
+      .then(() => {
+        window.clearTimeout(safety);
+        done();
+      });
   };
 
   const onDragStart: React.PointerEventHandler<HTMLDivElement> = (e) => {
     dragState.current = { startX: e.clientX, startY: e.clientY, startW: window.innerWidth, startH: window.innerHeight };
     lastSentSize.current = { w: window.innerWidth, h: window.innerHeight };
+    // ドラッグ開始時（サイズが安定している瞬間）に CSS px → 論理 px の換算比率を native へ確定させる。
+    //  完了 Promise を保持し、最初の resizeTo はこれの解決を待ってから送る（順序保証）。
+    beginReady.current = juceBridge.callNative('window_action', 'resizeBegin', window.innerWidth, window.innerHeight);
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onDrag: React.PointerEventHandler<HTMLDivElement> = (e) => {
     if (!dragState.current) return;
-    const dx = e.clientX - dragState.current.startX;
-    const dy = e.clientY - dragState.current.startY;
-    const w = Math.round(Math.max(392, dragState.current.startW + dx));
-    const h = Math.round(Math.max(610, dragState.current.startH + dy));
+    // ハンドルの右下角をカーソル位置（ビューポート座標＝CSS px）に直接アンカーする。
+    //  startW+dx 方式だと掴んだ位置のズレ(grab gap)を恒久的に引きずる（カーソルが内側に残る）ため、
+    //  カーソル直アンカーにして角がカーソルへ追従するようにする。ビューポート左上は固定なので
+    //  clientX/clientY がそのまま「左/上端からの目標サイズ(CSS px)」になる。
+    //  CSS px → 論理 px の換算と最小/最大拘束は native(resizeBegin の固定比率)が行う。
+    const w = Math.max(1, Math.round(e.clientX));
+    const h = Math.max(1, Math.round(e.clientY));
     pendingResize.current = { w, h };
     pumpResize();
   };
   const onDragEnd: React.PointerEventHandler<HTMLDivElement> = (e) => {
     dragState.current = null;
     pumpResize();
+    // 比率はリセットしない：バックプレッシャで最後の resizeTo が遅れて送出されても正しい比率を保つ。
+    //  resizeTo はドラッグ中のみ送出され、次ドラッグの resizeBegin で再確定されるため残存値は無害。
     if (e.currentTarget.hasPointerCapture?.(e.pointerId))
       e.currentTarget.releasePointerCapture(e.pointerId);
   };
@@ -157,6 +174,14 @@ function App() {
 
     juceBridge.whenReady(() => {
       juceBridge.callNative('system_action', 'ready');
+      // 初期サイズ・最小/最大サイズを「設計 CSS px × ratio」で確定させる。
+      //  WebView は表示の真の倍率(devicePixelRatio)を正しく拾うため、現在の innerWidth/innerHeight を
+      //  渡せば native 側で ratio = getWidth()/innerWidth（= DPR / ホスト総スケール）を求められる。
+      //  ホストが分数スケーリングを誤判定して間違った総スケールで窓を作っても、設計どおりの見た目に補正できる。
+      //  レイアウト確定後の値を使うため次フレームで送る。
+      requestAnimationFrame(() => {
+        juceBridge.callNative('window_action', 'apply_layout', window.innerWidth, window.innerHeight);
+      });
     });
 
     // 右クリック（contextmenu）を全体で抑止し、許可対象は通す

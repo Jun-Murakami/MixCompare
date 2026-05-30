@@ -2,10 +2,17 @@
 // Copyright (C) 2026 Jun Murakami
 #include "MonkeyAudioFormat.h"
 
-// Monkey's Audio SDK
+// Monkey's Audio SDK（vendored: 警告は本体側の責務ではないため抑止して取り込む）
+#if defined(__GNUC__) || defined(__clang__)
+ #pragma GCC diagnostic push
+ #pragma GCC diagnostic ignored "-Wzero-as-null-pointer-constant"
+#endif
 #include "All.h"
 #include "MACLib.h"
 #include "IAPEIO.h"
+#if defined(__GNUC__) || defined(__clang__)
+ #pragma GCC diagnostic pop
+#endif
 
 namespace mc3 {
 
@@ -88,8 +95,8 @@ private:
 class MonkeyAudioFormat::MonkeyAudioReader : public juce::AudioFormatReader
 {
 public:
-    MonkeyAudioReader (juce::InputStream* stream, const juce::String& formatName)
-        : AudioFormatReader (stream, formatName)
+    MonkeyAudioReader (juce::InputStream* stream, const juce::String& formatNameToUse)
+        : AudioFormatReader (stream, formatNameToUse)
     {
         apeIO = std::make_unique<JuceStreamAPEIO> (stream);
 

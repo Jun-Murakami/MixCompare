@@ -146,6 +146,15 @@ private:
     // リサイズグリッパー（スタンドアロン用）
     std::unique_ptr<juce::ResizableCornerComponent> resizer;
     juce::ComponentBoundsConstrainer resizerConstraints;
+
+    // WebUI リサイズハンドル用：CSS px → 論理 px の換算比率。
+    //  ドラッグ開始時（サイズが安定している瞬間）に getWidth()/innerWidth で 1 回だけ確定し、
+    //  ドラッグ中は固定する。毎フレーム再計算すると WebView の innerWidth 反映遅延で比率が
+    //  発散する（巨大化）/最小に貼り付く ため、必ず開始時固定とする。
+    double webResizeRatioW { 1.0 };
+    double webResizeRatioH { 1.0 };
+    // apply_layout（初期サイズの設計CSS合わせ）を初回だけ実行するためのフラグ
+    bool   initialLayoutApplied { false };
     
     // シャットダウン中フラグ（非同期イベントの早期リターンに使用）
     std::atomic<bool> isShuttingDown{ false };

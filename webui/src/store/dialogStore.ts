@@ -32,7 +32,7 @@ interface DialogInputOptions {
   helperText?: string;
 }
 
-interface DialogOptions {
+export interface DialogOptions {
   title: string;
   content: string | React.ReactNode;
   primaryButton?: DialogButton;
@@ -46,6 +46,9 @@ interface DialogState {
   isOpen: boolean;
   options: DialogOptions | null;
   resolve: ((value: string | null) => void) | null;
+  // ダイアログを開くたびに増加する識別子。入力状態を持つ内側コンポーネントの
+  // key に使い、新しいダイアログごとに再マウントして状態を初期化する。
+  dialogId: number;
 }
 
 interface DialogStore extends DialogState {
@@ -57,6 +60,7 @@ export const useDialogStore = create<DialogStore>((set, get) => ({
   isOpen: false,
   options: null,
   resolve: null,
+  dialogId: 0,
 
   showDialog: (options: DialogOptions) => {
     return new Promise<string | null>((resolve) => {
@@ -64,6 +68,7 @@ export const useDialogStore = create<DialogStore>((set, get) => ({
         isOpen: true,
         options,
         resolve,
+        dialogId: get().dialogId + 1,
       });
     });
   },

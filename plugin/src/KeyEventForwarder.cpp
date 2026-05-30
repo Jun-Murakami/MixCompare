@@ -129,6 +129,7 @@ bool KeyEventForwarder::forwardKeyEventToHost(const juce::var& eventData, juce::
 #elif JUCE_MAC
     return dispatchKeyEventUsingCocoa(eventData, editorComponent);
 #else
+    juce::ignoreUnused (editorComponent);
     return false;
 #endif
 }
