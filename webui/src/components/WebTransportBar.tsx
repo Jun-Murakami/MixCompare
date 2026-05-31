@@ -36,7 +36,7 @@ export const WebTransportBar: React.FC = () => {
     const k = webAudioEngine.addEventListener('sourceLoaded', onChange);
     return () => webAudioEngine.removeEventListener(k);
   }, []);
-  const sourceName = useSyncExternalStore(subscribeSource, () => webAudioEngine.getCurrentHostSource()?.name ?? 'sample.mp3');
+  const sourceName = useSyncExternalStore(subscribeSource, () => webAudioEngine.getCurrentHostSource()?.name ?? 'AI alive tonight (Hyper Anison)');
   const duration = useSyncExternalStore(subscribeSource, () => webAudioEngine.getCurrentHostSource()?.duration ?? 0);
 
   const [isPlaying, setIsPlaying] = useState(false);

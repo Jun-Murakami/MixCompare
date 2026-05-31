@@ -89,8 +89,21 @@ export class WebAudioEngine {
 
   addEventListener(event: string, callback: EventCallback): string {
     const id = `web_${this.nextListenerId++}`;
-    this.listeners.set(`${event}:${id}`, callback);
-    return `${event}:${id}`;
+    const key = `${event}:${id}`;
+    this.listeners.set(key, callback);
+    // デフォルトプレイリストは UI マウント前（初期化時）に読み込まれるため、
+    // 新規購読者には現在のプレイリストを即時リプレイしてイベント取りこぼしを防ぐ。
+    if (event === 'playlistUpdate' && this.tracks.length > 0) {
+      queueMicrotask(() => {
+        if (this.listeners.get(key) !== callback) return;
+        callback({ items: this.buildPlaylistItems(), currentIndex: this.currentTrackIndex });
+      });
+    }
+    return key;
+  }
+
+  private buildPlaylistItems() {
+    return this.tracks.map(t => ({ id: t.id, name: t.name, duration: t.duration, isLoaded: t.isLoaded, exists: t.exists }));
   }
 
   removeEventListener(key: string): void { this.listeners.delete(key); }
@@ -180,37 +193,60 @@ export class WebAudioEngine {
       try {
         const ab = await file.arrayBuffer();
         const audioBuf = await this.audioContext.decodeAudioData(ab);
-        const leftCopy = new Float32Array(audioBuf.getChannelData(0));
-        const rightCopy = new Float32Array(
-          audioBuf.numberOfChannels >= 2 ? audioBuf.getChannelData(1) : audioBuf.getChannelData(0)
-        );
-
-        const index = this.tracks.length;
-        this.tracks.push({
-          id: `track_${Date.now()}_${index}`,
-          name: file.name.replace(/\.[^.]+$/, ''),
-          duration: audioBuf.duration,
-          sampleRate: audioBuf.sampleRate,
-          isLoaded: true, exists: true,
-        });
-
-        // Worklet → WASM にPCM転送
-        this.workletNode?.port.postMessage({
-          type: 'load-track', index,
-          left: leftCopy.buffer, right: rightCopy.buffer,
-          numSamples: leftCopy.length, trackSampleRate: audioBuf.sampleRate,
-        }, [leftCopy.buffer, rightCopy.buffer]);
-
-        if (this.currentTrackIndex < 0) {
-          this.currentTrackIndex = 0;
-          this.duration = audioBuf.duration;
-          this.workletNode?.port.postMessage({ type: 'select-track', index: 0 });
-        }
+        this.pushDecodedTrack(audioBuf, file.name);
       } catch (err) {
         this.emit('errorNotification', { severity: 'error', message: `Decode failed: ${file.name}`, details: String(err) });
       }
     }
     this.emitPlaylistUpdate();
+  }
+
+  // URL（public-web/audio 配下の同梱サンプル等）からプレイリストに追加する。
+  // Web デモのデフォルトプレイリスト読み込み用。
+  async addTracksFromUrls(urls: readonly string[]): Promise<void> {
+    if (!this.audioContext) return;
+    for (const url of urls) {
+      const name = decodeURIComponent(url.split('/').pop() || url);
+      try {
+        const r = await fetch(encodeURI(url));
+        if (!r.ok) continue;
+        const audioBuf = await this.audioContext.decodeAudioData(await r.arrayBuffer());
+        this.pushDecodedTrack(audioBuf, name);
+      } catch (err) {
+        this.emit('errorNotification', { severity: 'error', message: `Load failed: ${name}`, details: String(err) });
+      }
+    }
+    this.emitPlaylistUpdate();
+  }
+
+  // デコード済みバッファを 1 トラックとして追加し、PCM を WASM に転送する共通処理。
+  private pushDecodedTrack(audioBuf: AudioBuffer, fileName: string): void {
+    const leftCopy = new Float32Array(audioBuf.getChannelData(0));
+    const rightCopy = new Float32Array(
+      audioBuf.numberOfChannels >= 2 ? audioBuf.getChannelData(1) : audioBuf.getChannelData(0)
+    );
+
+    const index = this.tracks.length;
+    this.tracks.push({
+      id: `track_${Date.now()}_${index}`,
+      name: fileName.replace(/\.[^.]+$/, ''),
+      duration: audioBuf.duration,
+      sampleRate: audioBuf.sampleRate,
+      isLoaded: true, exists: true,
+    });
+
+    // Worklet → WASM にPCM転送
+    this.workletNode?.port.postMessage({
+      type: 'load-track', index,
+      left: leftCopy.buffer, right: rightCopy.buffer,
+      numSamples: leftCopy.length, trackSampleRate: audioBuf.sampleRate,
+    }, [leftCopy.buffer, rightCopy.buffer]);
+
+    if (this.currentTrackIndex < 0) {
+      this.currentTrackIndex = 0;
+      this.duration = audioBuf.duration;
+      this.workletNode?.port.postMessage({ type: 'select-track', index: 0 });
+    }
   }
 
   removeTrack(id: string): void {
@@ -356,10 +392,10 @@ export class WebAudioEngine {
   async loadHostSample(url: string): Promise<void> {
     if (!this.audioContext) return;
     try {
-      const r = await fetch(url);
+      const r = await fetch(encodeURI(url));
       if (!r.ok) return;
       const audioBuf = await this.audioContext.decodeAudioData(await r.arrayBuffer());
-      const name = url.split('/').pop() || url;
+      const name = decodeURIComponent(url.split('/').pop() || url);
       this.sendHostBufferToWasm(audioBuf, name);
     } catch { /* ignore */ }
   }
@@ -412,7 +448,7 @@ export class WebAudioEngine {
 
   private emitPlaylistUpdate(): void {
     this.emit('playlistUpdate', {
-      items: this.tracks.map(t => ({ id: t.id, name: t.name, duration: t.duration, isLoaded: t.isLoaded, exists: t.exists })),
+      items: this.buildPlaylistItems(),
       currentIndex: this.currentTrackIndex,
     });
   }
@@ -432,7 +468,7 @@ export class WebAudioEngine {
 
   private emitTrackChange(): void {
     this.emit('trackChange', {
-      items: this.tracks.map(t => ({ id: t.id, name: t.name, duration: t.duration, isLoaded: t.isLoaded, exists: t.exists })),
+      items: this.buildPlaylistItems(),
       currentIndex: this.currentTrackIndex,
       isPlaying: this.isPlaying,
       position: 0,

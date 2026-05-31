@@ -36,8 +36,15 @@ class WebBridgeManager {
   private async initialize() {
     try {
       await webAudioEngine.initialize();
-      // Host サンプル音源をプリロード（デモ用）
-      await webAudioEngine.loadHostSample('/audio/sample.mp3');
+      // Host(DAW) 入力としてループ再生するサンプル音源をプリロード（デモ用）
+      // MP3 で配信する（AAC/m4a は Linux 系ブラウザの非プロプライエタリビルドでデコード不可のため）
+      await webAudioEngine.loadHostSample('/audio/AI alive tonight (Hyper Anison).mp3');
+      // デフォルトのプレイリスト（リファレンス比較用のアレンジ違い 4 種）
+      await webAudioEngine.addTracksFromUrls([
+        '/audio/AI alive tonight (Liquid Funk D_B).mp3',
+        "/audio/AI alive tonight (80's Rock Musical).mp3",
+        '/audio/AI alive tonight (Symphonic Metal).mp3',
+      ]);
     } catch (err) {
       console.error('[WebBridge] Initialization failed:', err);
     }

@@ -52,11 +52,19 @@ function mergePublicWeb(): Plugin {
       server.middlewares.use((req, res, next) => {
         if (!req.url) return next();
 
-        // URL からクエリ文字列を除去
-        const urlPath = req.url.split('?')[0];
+        // URL からクエリ文字列を除去し、パーセントエンコード（%20 等）をデコードする。
+        // スペースや括弧を含むファイル名（例: "AI alive tonight (...).mp3"）は
+        // ブラウザが %xx でエンコードして送るため、デコードしないとディスク上のパスと一致しない。
+        let urlPath: string;
+        try {
+          urlPath = decodeURIComponent(req.url.split('?')[0]);
+        } catch {
+          return next();
+        }
         const filePath = resolvePath(webPublicDir, '.' + urlPath);
 
-        if (existsSync(filePath) && !filePath.includes('..')) {
+        // パストラバーサル防止: 解決後のパスが public-web 配下であることを保証する。
+        if (existsSync(filePath) && filePath.startsWith(webPublicDir)) {
           const stat = statSync(filePath);
           if (stat.isFile()) {
             const ext = filePath.split('.').pop()?.toLowerCase() || '';
