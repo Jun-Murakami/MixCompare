@@ -425,13 +425,24 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
         setSize(392, 650);
     }
     
-    // リサイズ可能に設定（プラグイン・スタンドアロン共通）
-    setResizable(true, true);
-    setResizeLimits(392, 610, 2560, 1440);
-    
     // リサイズ制約を設定
     resizerConstraints.setMinimumSize(392, 610);
     resizerConstraints.setMaximumSize(2560, 1440);
+
+#if JUCE_LINUX || JUCE_BSD
+    // Linux: Bitwig 等のホストはウィンドウ枠ドラッグをプラグインへ転送せず、
+    //  枠を広げても黒余白が増えるだけ（onSize/guiSetSize に現在サイズの echo しか来ない）。
+    //  そこで「ユーザーによる枠リサイズは不可」とホストへ申告し（canResize/guiCanResize=false）、
+    //  リサイズは自前 WebUI ハンドル（setSize→host request_resize）経由のみ許可する。
+    //  ※ setResizeLimits は min≠max のとき resizableByHost を true に戻してしまうため使わない。
+    //    独自 constrainer を設定し、サイズ制限はそちら側で管理する。
+    setConstrainer(&resizerConstraints);
+    setResizable(false, false);
+#else
+    // Windows / macOS: ホストが枠リサイズを正しく転送するため従来どおり可変。
+    setResizable(true, true);
+    setResizeLimits(392, 610, 2560, 1440);
+#endif
     
     // リサイズグリッパー（右下の角に表示される三角形のハンドル）を作成
     resizer = std::make_unique<juce::ResizableCornerComponent>(this, &resizerConstraints);
@@ -477,6 +488,11 @@ MixCompare3AudioProcessorEditor::~MixCompare3AudioProcessorEditor()
 
     // タイマーを即座に停止
     stopTimer();
+
+    // 保留中のリサイズ ack completion は呼ばずに破棄（破棄中の WebView へのコールバックを避ける）。
+    //  JS 側は自前の安全タイムアウトで in-flight を解除するため未解決のままで問題ない。
+    resizeAckPending = false;
+    pendingResizeCompletion = {};
     
     // WebViewを先に停止・非表示にする（リソースプロバイダーの呼び出しを防ぐ）
     if (webViewLifetimeGuard.isConstructed())
@@ -614,23 +630,84 @@ void MixCompare3AudioProcessorEditor::resized()
     // WebViewをウィンドウ全域に配置（余白なし）
     const int gripperSize = 24;
     webView.setBounds(getLocalBounds());
-    
+
     // リサイズグリッパーの位置を更新（最前面に）
     if (resizer)
     {
-        resizer->setBounds(getWidth() - gripperSize, 
-                          getHeight() - gripperSize, 
-                          gripperSize, 
+        resizer->setBounds(getWidth() - gripperSize,
+                          getHeight() - gripperSize,
+                          gripperSize,
                           gripperSize);
         resizer->toFront(true);  // 最前面に移動
     }
+
+#if JUCE_LINUX || JUCE_BSD
+    // Linux 限定のリサイズ・バックプレッシャ（[[linux-dpi-resize-scaling]] 参照）。
+    //  ホスト主導の resized()（= guiSetSize/onSize の echo）が着地したら、保留中の resizeTo を
+    //  確定して JS に「往復完了」を通知する。自分の setSize 起因の resized()（resizeSelfDriven）は
+    //  ホスト確定ではないので無視する。
+    if (resizeAckPending && !resizeSelfDriven)
+        resolveResizeAck();
+#endif
 }
+
+void MixCompare3AudioProcessorEditor::resolveResizeAck()
+{
+    if (!resizeAckPending)
+        return;
+    resizeAckPending = false;
+    auto completion = std::move(pendingResizeCompletion);
+    pendingResizeCompletion = {};
+    if (completion)
+        completion(juce::var{ true });
+}
+
 
 void MixCompare3AudioProcessorEditor::timerCallback()
 {
+#if JUCE_LINUX || JUCE_BSD
+    // Linux 限定のリサイズ・バックプレッシャ／再同期（[[linux-dpi-resize-scaling]] 参照）。
+    //  Bitwig 等は枠ドラッグをプラグインへ転送しないため枠リサイズは無効化し（setResizable(false)）、
+    //  自前ハンドルのみ許可している。ハンドルの高頻度リサイズで取り残された黒残り/見切れを、
+    //  ホストの echo 待ち（バックプレッシャ）と落ち着き後の強制再同期で収束させる。
+    // ack 安全タイムアウト: ホストが echo を返さない場合でも保留 completion を必ず解決し、
+    //  JS のバックプレッシャがフリーズしないようにする（~45ms = 最低 ~22fps を保証）。
+    if (resizeAckPending
+        && (juce::Time::getMillisecondCounter() - resizeAckStartMs) > 45)
+        resolveResizeAck();
+#endif
+
     // 終了中・モーダルダイアログ表示中は送出を停止（OpenPanel 等の操作性確保）
     if (isShuttingDown.load() || activeModalDialogs.load(std::memory_order_acquire) > 0)
         return;
+
+#if JUCE_LINUX || JUCE_BSD
+    // リサイズ落ち着き後の強制再同期（2 tick に分割した 1px ジグル）。
+    //  editor が既に最終サイズだと resized() が発火せず、ホストのコンテナ窓が中間サイズで
+    //  取り残されても再同期されない。1px だけ変えて戻すことで guiRequestResize と
+    //  webView.setBounds を確実に再発火させ収束させる。ジグルを 2 tick に分けて間に ~16ms
+    //  空けるのは、同期連続 setBounds が WebKitGTK の描画を固める不具合を避けるため。
+    //  step2: 前 tick で 1px 縮めた分を元へ戻す。
+    if (resyncStep2Pending)
+    {
+        resyncStep2Pending = false;
+        const juce::ScopedValueSetter<bool> selfDriven(resizeSelfDriven, true);
+        setSize(resyncTargetW, resyncTargetH);
+    }
+    //  step1: 直近のリサイズから ~120ms アイドルになったら 1px 縮めて再同期を開始。
+    else if (!settleReconcileDone
+        && !resizeAckPending
+        && isVisible()
+        && (juce::Time::getMillisecondCounter() - lastResizeActivityMs) > 120)
+    {
+        settleReconcileDone = true;
+        resyncTargetW = getWidth();
+        resyncTargetH = getHeight();
+        resyncStep2Pending = true;
+        const juce::ScopedValueSetter<bool> selfDriven(resizeSelfDriven, true);
+        setSize(resyncTargetW, juce::jmax(1, resyncTargetH - 1));
+    }
+#endif
 
 #if defined(JUCE_WINDOWS)
     // 各フレームで HWND ベースの DPI をポーリングし、変化を検出
@@ -1335,9 +1412,15 @@ void MixCompare3AudioProcessorEditor::handleWindowAction(
         const int maxH = juce::roundToInt(kDesignMaxH * webResizeRatioH);
 
         // ホストへ報告する最小/最大も ratio 換算後の論理 px に合わせる（黒余白・過大窓の防止）。
+#if JUCE_LINUX || JUCE_BSD
+        // Linux: setResizeLimits は min≠max のとき resizableByHost を true に戻して
+        //  「ユーザーリサイズ不可」設定を壊すため使わない。独自 constrainer の制限のみ更新する。
+        resizerConstraints.setSizeLimits(minW, minH, maxW, maxH);
+#else
         setResizeLimits(minW, minH, maxW, maxH);
         resizerConstraints.setMinimumSize(minW, minH);
         resizerConstraints.setMaximumSize(maxW, maxH);
+#endif
 
         // 初期サイズは設計 CSS（392x650）に一致させる。多重適用を避けるため初回のみ。
         if (!initialLayoutApplied)
@@ -1357,9 +1440,40 @@ void MixCompare3AudioProcessorEditor::handleWindowAction(
         //  （CSS でクランプしないと ratio≠1 の環境で最小値が論理px基準にずれる）。
         const double cssW = juce::jlimit<double>(kDesignMinW, kDesignMaxW, (double)args[1]);
         const double cssH = juce::jlimit<double>(kDesignMinH, kDesignMaxH, (double)args[2]);
-        setSize(juce::roundToInt(cssW * webResizeRatioW),
-                juce::roundToInt(cssH * webResizeRatioH));
+        const int targetW = juce::roundToInt(cssW * webResizeRatioW);
+        const int targetH = juce::roundToInt(cssH * webResizeRatioH);
+
+#if JUCE_LINUX || JUCE_BSD
+        // Linux 限定の「真のバックプレッシャ」: completion を即返さず、ホストが実際に
+        //  リサイズし終える（resized() が再発火する）まで保留する。これにより JS は往復1件ずつ
+        //  送るようになり、高頻度送信でホストがリクエストを取りこぼす齟齬を防ぐ。
+        //  Windows / macOS はホストのリサイズ授受が素直なので従来どおり即完了させる（下の #else）。
+        resolveResizeAck();  // 以前の保留が残っていれば先に解決（安全策）
+
+        // リサイズ活動を記録（アイドル後の強制再同期トリガ用）。
+        lastResizeActivityMs = juce::Time::getMillisecondCounter();
+        settleReconcileDone = false;
+
+        const bool sizeChanges = (getWidth() != targetW || getHeight() != targetH);
+        if (sizeChanges)
+        {
+            // 自分の setSize 起因の resized() はホスト確定と区別する（resizeSelfDriven）。
+            pendingResizeCompletion = std::move(completion);
+            resizeAckPending = true;
+            resizeAckStartMs = juce::Time::getMillisecondCounter();
+            const juce::ScopedValueSetter<bool> selfDriven(resizeSelfDriven, true);
+            setSize(targetW, targetH);
+            // ホストが echo を返さない/サイズ据え置きの場合は timerCallback の安全タイムアウトで確定。
+        }
+        else
+        {
+            completion(juce::var{ true });  // サイズ不変なら往復不要
+        }
+#else
+        // Windows / macOS: 従来どおり即時 setSize + 即完了。
+        setSize(targetW, targetH);
         completion(juce::var{ true });
+#endif
         return;
     }
 

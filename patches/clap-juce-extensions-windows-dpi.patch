@@ -1,5 +1,5 @@
 diff --git a/src/wrapper/clap-juce-wrapper.cpp b/src/wrapper/clap-juce-wrapper.cpp
-index 4eb4727..2357192 100644
+index 4eb4727..8db63b3 100644
 --- a/src/wrapper/clap-juce-wrapper.cpp
 +++ b/src/wrapper/clap-juce-wrapper.cpp
 @@ -2067,7 +2067,12 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
@@ -15,11 +15,11 @@ index 4eb4727..2357192 100644
 +                //  物理ピクセル⇔論理ピクセルに変換する（getHostScale/convertToHostBounds）。
                  editor->setScaleFactor(clapWrapper.guiScaleFactor);
  #endif
-
+ 
 @@ -2097,9 +2102,22 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
              return {};
          }
-
+ 
 +        // ホスト（物理ピクセル）と JUCE（論理ピクセル）の換算スケール。
 +        //  Windows: JUCE ピアの実 DPI スケール（Per-Monitor DPI が反映され、異 DPI モニタ間でも
 +        //           ピア自身が追従する）。スケール源を一本化することで二重適用を防ぐ。
@@ -39,7 +39,7 @@ index 4eb4727..2357192 100644
 +            const auto desktopScale = getHostScale();
              if (juce::isWithin(desktopScale, 1.0f, 1.0e-3f))
                  return pluginRect;
-
+ 
 @@ -2113,11 +2131,19 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
          {
              if (editor != nullptr)
@@ -61,12 +61,12 @@ index 4eb4727..2357192 100644
 +                    host.guiRequestResize((uint32_t)hostBounds.getWidth(),
 +                                          (uint32_t)hostBounds.getHeight());
                  }
-
+ 
                  setBounds(editorBounds.withPosition(0, 0));
 @@ -2133,7 +2159,12 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
                  {
                      const juce::ScopedValueSetter<bool> resizingChildSetter{resizingChild, true};
-
+ 
 +                  #if !JUCE_WINDOWS
 +                    // Windows はピアスケール一本へ統一するため transform は掛けない（二重適用回避）。
                      editor->setScaleFactor(scale);
@@ -75,11 +75,24 @@ index 4eb4727..2357192 100644
 +                  #endif
                      editor->setBounds(prevEditorBounds.withPosition(0, 0));
                  }
-
-@@ -2346,8 +2377,15 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+ 
+@@ -2339,15 +2370,26 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+ 
+     bool guiSetSize(uint32_t width, uint32_t height) noexcept override
+     {
+-        //        std::cout << "GUI SET SIZE " << width << " " << height << std::endl;
+         if (editorWrapper == nullptr || editorWrapper->editor == nullptr)
+             return false;
+ 
++      #if !(JUCE_LINUX || JUCE_BSD)
++        // Linux 以外は従来どおり。Linux では「ユーザーリサイズ不可(guiCanResize=false)」と
++        //  申告するため editor->isResizable() が false になるが、自前 WebUI ハンドルの
++        //  request_resize 往復で来る set_size は honor する必要があるためゲートしない。
          if (!editorWrapper->editor->isResizable())
              return false;
-
+-
++      #endif
++
 +      #if JUCE_WINDOWS
 +        // ホストからは物理ピクセルで来るため、ピアスケールで割って論理ピクセルへ変換して設定する。
 +        const auto s = editorWrapper->getHostScale();
@@ -91,8 +104,8 @@ index 4eb4727..2357192 100644
 +      #endif
          return true;
      }
-
-@@ -2356,7 +2394,13 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
+ 
+@@ -2356,7 +2398,13 @@ class ClapJuceWrapper : public clap::helpers::Plugin<
          const juce::MessageManagerLock mmLock;
          if (editorWrapper != nullptr && editorWrapper->editor != nullptr)
          {

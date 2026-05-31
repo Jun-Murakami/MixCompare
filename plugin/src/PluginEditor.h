@@ -155,6 +155,31 @@ private:
     double webResizeRatioH { 1.0 };
     // apply_layout（初期サイズの設計CSS合わせ）を初回だけ実行するためのフラグ
     bool   initialLayoutApplied { false };
+
+    // --- リサイズの「真のバックプレッシャ」用 ---
+    //  resizeTo は setSize 後すぐに completion を返さず、ホストが実際にウィンドウを
+    //  リサイズし終えた（guiSetSize/onSize の echo で resized() が再発火した）ことを
+    //  検知してから completion を返す。これにより JS は「往復1件ずつ」送るようになり、
+    //  高頻度送信でホストがリクエストを coalesce して取りこぼす齟齬（黒残り/見切れ）を防ぐ。
+    //  resizeAckPending: ホスト確定待ちの resizeTo が存在するか
+    //  resizeSelfDriven: 自分の setSize 起因の resized()（ホスト echo と区別するため）
+    bool   resizeAckPending { false };
+    bool   resizeSelfDriven { false };
+    juce::uint32 resizeAckStartMs { 0 };
+    juce::WebBrowserComponent::NativeFunctionCompletion pendingResizeCompletion;
+    void resolveResizeAck();
+
+    // --- リサイズ落ち着き後の「強制再同期」用 ---
+    //  高頻度リサイズ後、ホストのコンテナ窓が中間サイズで取り残され、editor が既に最終サイズだと
+    //  resized() が発火せず再同期されない（黒残り/見切れが残る）。アイドル検出後に 1px ジグルで
+    //  guiRequestResize と webView.setBounds を再発火させて収束させる。
+    //  ※ ジグルは 2 tick に分割して間に ~16ms 空ける（同期連続 setBounds は WebKitGTK の描画を
+    //    固める恐れがあるため。通常ドラッグは tick 間隔があり安全）。
+    juce::uint32 lastResizeActivityMs { 0 };
+    bool   settleReconcileDone { true };
+    bool   resyncStep2Pending { false };
+    int    resyncTargetW { 0 };
+    int    resyncTargetH { 0 };
     
     // シャットダウン中フラグ（非同期イベントの早期リターンに使用）
     std::atomic<bool> isShuttingDown{ false };

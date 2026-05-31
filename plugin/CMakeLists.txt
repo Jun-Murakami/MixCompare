@@ -165,6 +165,14 @@ target_link_libraries(MixCompare
         juce::juce_recommended_warning_flags
 )
 
+# Linux: KeyEventForwarder の X11 キーイベント合成送出（XSendEvent 等）に libX11 を明示リンク。
+#  JUCE はプラグインターゲットへ X11 を直接リンクしないため、自前で追加する。
+if(UNIX AND NOT APPLE)
+    find_package(X11 REQUIRED)
+    target_link_libraries(MixCompare PRIVATE ${X11_LIBRARIES})
+    target_include_directories(MixCompare PRIVATE ${X11_INCLUDE_DIR})
+endif()
+
 # macOS 固有の設定（wraptool / codesign のヘッダパッド不足対策）
 # - PACE wraptool および Apple の codesign は Mach-O のヘッダ領域に追記が必要になる場合がある
 # - juce_add_plugin によりターゲットが生成された「後」で設定を適用する

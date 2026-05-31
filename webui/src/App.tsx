@@ -126,6 +126,10 @@ function App() {
       });
   };
 
+  // 注: ドラッグ終了後の最終整合は native 側（PluginEditor の forceResizeResync）に一本化した。
+  //  JS からの再送は editor が既に最終サイズだと no-op になり、取り残された host/WebView を
+  //  再同期できないため。native は 1px ジグルで全面（host コンテナ・editor・WebView）を収束させる。
+
   const onDragStart: React.PointerEventHandler<HTMLDivElement> = (e) => {
     dragState.current = { startX: e.clientX, startY: e.clientY, startW: window.innerWidth, startH: window.innerHeight };
     lastSentSize.current = { w: window.innerWidth, h: window.innerHeight };

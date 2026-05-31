@@ -1,8 +1,13 @@
 # ApplyClapPatch.cmake
 # ------------------------------------------------------------------------------
 # JUCE 9 が CLAP を正式対応するまでの暫定運用。
-# clap-juce-extensions（submodule）の Windows DPI 二重スケール修正パッチを、
-# configure のたびに「submodule を pristine に戻してから現行パッチを当て直す」方式で適用する。
+# clap-juce-extensions（submodule）への修正パッチ（ファイル名は歴史的に windows-dpi だが、
+# 現在は次の2つを束ねる）を、configure のたびに「submodule を pristine に戻してから現行
+# パッチを当て直す」方式で適用する。
+#   1) Windows DPI 二重スケール修正（setScaleFactor を掛けずピアスケール一本化）
+#   2) guiSetSize の Linux ゲート解除（Linux では枠リサイズを無効化＝guiCanResize=false に
+#      するが、自前 WebUI ハンドルの request_resize 往復で来る set_size は honor させるため、
+#      Linux のみ editor->isResizable() ゲートをスキップする）
 #
 #  - 冪等        : 何度 configure しても結果は同じ
 #  - 更新に追従   : パッチ内容が変わっても常に最新パッチの状態へ収束（旧パッチとの衝突なし）
