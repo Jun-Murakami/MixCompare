@@ -155,6 +155,9 @@ private:
     double webResizeRatioH { 1.0 };
     // apply_layout（初期サイズの設計CSS合わせ）を初回だけ実行するためのフラグ
     bool   initialLayoutApplied { false };
+    // APVTS state の保存サイズ（editorWidth/editorHeight）から復元したか。
+    //  復元した場合、apply_layout の初回リサイズで保存値（論理px）を上書きしない（毎回リセットされるバグの修正）。
+    bool   restoredFromSavedSize { false };
 
     // --- リサイズの「真のバックプレッシャ」用 ---
     //  resizeTo は setSize 後すぐに completion を返さず、ホストが実際にウィンドウを

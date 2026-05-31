@@ -414,17 +414,23 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
 #endif
     }
     
-    // ウィンドウサイズ設定　AAXは横幅450px, 縦幅650px
-    if (juce::PluginHostType().isProTools()
-        && juce::PluginHostType::getPluginLoadedAs() == juce::AudioProcessor::WrapperType::wrapperType_AAX)
-    {
-        setSize(450, 650);
-    }
-    else
-    {
-        setSize(392, 650);
-    }
-    
+    // ウィンドウサイズ設定。設計初期サイズは 392×650（AAX のみ横 450）。
+    const bool isAAX = juce::PluginHostType().isProTools()
+                       && juce::PluginHostType::getPluginLoadedAs() == juce::AudioProcessor::WrapperType::wrapperType_AAX;
+    const int initW = isAAX ? 450 : 392;
+    const int initH = 650;
+
+    // 編集サイズの永続化。ホストのウィンドウサイズ記憶はフォーマット/ホスト依存で不安定なため、
+    //  APVTS state へ editorWidth/editorHeight を自前保存し、ここで強制復元してホスト・フォーマット
+    //  非依存にする（TinyVU と同方針）。保存値は論理 px。範囲は min 392×610 / max 2560×1440。
+    const auto apvtsState = audioProcessor.getState().state;
+    restoredFromSavedSize = apvtsState.hasProperty("editorWidth") && apvtsState.hasProperty("editorHeight");
+    const int savedW = static_cast<int>(apvtsState.getProperty("editorWidth",  initW));
+    const int savedH = static_cast<int>(apvtsState.getProperty("editorHeight", initH));
+    const int restoreW = juce::jlimit(392, 2560, savedW);
+    const int restoreH = juce::jlimit(610, 1440, savedH);
+    setSize(restoreW, restoreH);
+
     // リサイズ制約を設定
     resizerConstraints.setMinimumSize(392, 610);
     resizerConstraints.setMaximumSize(2560, 1440);
@@ -476,6 +482,15 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
     if (auto* pm = audioProcessor.getPlaylistManager()) {
         pm->addListener(this);
     }
+
+    // 一部ホスト（Pro Tools AAX, Cubase など）はコンストラクタ中の setSize を無視したり、
+    //  独自保存サイズで最初の resized() を呼ぶため、次のメッセージループで復元サイズへ強制復帰させる。
+    juce::MessageManager::callAsync([safe = juce::Component::SafePointer(this), restoreW, restoreH]()
+    {
+        if (safe == nullptr) return;
+        if (safe->getWidth() != restoreW || safe->getHeight() != restoreH)
+            safe->setSize(restoreW, restoreH);
+    });
 
     // 初期レイアウトを適用（グリッパーとWebViewの配置を正しく設定）
     resized();
@@ -640,6 +655,12 @@ void MixCompare3AudioProcessorEditor::resized()
                           gripperSize);
         resizer->toFront(true);  // 最前面に移動
     }
+
+    // 編集サイズを APVTS state に保存し、次回オープン時にホスト保存値ではなくこの値で復元する。
+    //  property 名は parameter ID と衝突しないため APVTS listener には影響しない。論理 px で保存。
+    auto state = audioProcessor.getState().state;
+    state.setProperty("editorWidth",  getWidth(),  nullptr);
+    state.setProperty("editorHeight", getHeight(), nullptr);
 
 #if JUCE_LINUX || JUCE_BSD
     // Linux 限定のリサイズ・バックプレッシャ（[[linux-dpi-resize-scaling]] 参照）。
@@ -1423,11 +1444,15 @@ void MixCompare3AudioProcessorEditor::handleWindowAction(
 #endif
 
         // 初期サイズは設計 CSS（392x650）に一致させる。多重適用を避けるため初回のみ。
+        //  ★保存サイズから復元した場合は上書きしない。これをしないと、ホストがウィンドウサイズを
+        //    記憶している環境（CLAP Bitwig など）でも apply_layout が毎回設計初期サイズへ戻してしまい、
+        //    MixCompare だけ全環境でサイズ復元が効かない原因になっていた。
         if (!initialLayoutApplied)
         {
             initialLayoutApplied = true;
-            setSize(juce::roundToInt(kDesignInitW * webResizeRatioW),
-                    juce::roundToInt(kDesignInitH * webResizeRatioH));
+            if (!restoredFromSavedSize)
+                setSize(juce::roundToInt(kDesignInitW * webResizeRatioW),
+                        juce::roundToInt(kDesignInitH * webResizeRatioH));
         }
         completion(juce::var{ true });
         return;
