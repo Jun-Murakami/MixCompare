@@ -27,7 +27,35 @@ export const darkTheme = createTheme({
     },
   },
   typography: {
-    fontFamily: '"Jost",-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    // 欧文は Jost、和文は欧文フォントに無いため次のファミリへグリフ単位でフォールバックする。
+    // Linux/WebKitGTK では generic 'sans-serif' が CJK へ解決されず豆腐(□)になることがあるため、
+    // OS 標準の日本語フォントを明示列挙する（プラグインへのフォント埋め込みはしない）。
+    // 列挙順: 欧文(Jost他) → 和文(mac→Windows→Linux標準) → generic。
+    // 存在しないファミリはブラウザが読み飛ばすため、全OS分を並べても害はない。
+    fontFamily: [
+      '"Jost"',
+      '-apple-system',
+      'BlinkMacSystemFont',
+      '"Segoe UI"',
+      'Roboto',
+      '"Helvetica Neue"',
+      'Arial',
+      // --- macOS 標準和文 ---
+      '"Hiragino Sans"',
+      '"Hiragino Kaku Gothic ProN"',
+      // --- Windows 標準和文 ---
+      '"Yu Gothic UI"',
+      '"Yu Gothic"',
+      'Meiryo',
+      '"MS PGothic"',
+      // --- Linux 標準和文 ---
+      '"Noto Sans CJK JP"',
+      '"Noto Sans JP"',
+      '"IPAexGothic"',
+      '"VL Gothic"',
+      '"BIZ UDGothic"',
+      'sans-serif',
+    ].join(', '),
     h6: {
       fontSize: '1.1rem',
       fontWeight: 500,

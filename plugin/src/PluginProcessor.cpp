@@ -19,6 +19,9 @@
 #if JUCE_WINDOWS
 #include "audio/MediaFoundationAACFormat.h"
 #endif
+#if JUCE_LINUX
+#include "audio/FFmpegAACFormat.h"
+#endif
 
 
 MixCompare3AudioProcessor::MixCompare3AudioProcessor()
@@ -148,12 +151,19 @@ MixCompare3AudioProcessor::~MixCompare3AudioProcessor()
         backgroundFormatManager.clearFormats();
     }
     
-    // managersを明示的に破棄して順序を制御
+    // managersを明示的に破棄して順序を制御。
+    // 重要: StateManager のデストラクタは TransportManager / PlaylistManager へ
+    // removeListener() を呼ぶ（StateManager がそれらの listener になっているため）。
+    // よって StateManager を最初に破棄しないと、既に解放済みのマネージャを参照する
+    // use-after-free になる（AAX の Describe/ACFRegisterPlugin フェーズで生成→即破棄
+    // される際に EXC_BAD_ACCESS で顕在化していた）。
+    // TransportManager / PlaylistManager のデストラクタは空で StateManager を参照しないため、
+    // StateManager を先に破棄して問題ない。
+    stateManager.reset();
     meteringService.reset();
     playlistManager.reset();
     transportManager.reset();
     audioEngine.reset();
-    stateManager.reset();
 }
 
 const juce::String MixCompare3AudioProcessor::getName() const { return "MixCompare"; }
@@ -1657,6 +1667,10 @@ void MixCompare3AudioProcessor::initialiseBackgroundFormatManager()
 #if JUCE_WINDOWS
         if (mc3::MediaFoundationAACFormat::isMediaFoundationAvailable())
             backgroundFormatManager.registerFormat(new mc3::MediaFoundationAACFormat(), false);
+#endif
+#if JUCE_LINUX
+        if (mc3::FFmpegAACFormat::isFFmpegAvailable())
+            backgroundFormatManager.registerFormat(new mc3::FFmpegAACFormat(), false);
 #endif
     });
 }

@@ -14,6 +14,8 @@
 #   libx11-dev libxcomposite-dev libxcursor-dev libxext-dev
 #   libxinerama-dev libxrandr-dev libxrender-dev
 #   libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev libgtk-3-dev
+#   # m4a/AAC 再生（FFmpegAACFormat）用の dev ヘッダ。未導入でもビルドは通るが AAC が無効になる:
+#   libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
 
 set -euo pipefail
 

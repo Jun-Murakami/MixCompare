@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Jun Murakami
 #include "CrashHandler.h"
 
+#include <cstdlib> // std::getenv
+
 #if JUCE_WINDOWS
  #include <windows.h>
  #include <DbgHelp.h>
@@ -87,6 +89,11 @@ void crashHandlerCallback(void* data)
         message += "\nSignal: " + juce::String(signalNumber);
    #endif
 
+    // 原因箇所特定のため呼び出しスタックを記録する。
+    // signal ハンドラ内では厳密には async-signal-safe ではないが、
+    // 実務上はシンボル取得できることが多く、クラッシュ位置の特定に有用。
+    message += "\n\n--- Backtrace ---\n" + juce::SystemStats::getStackBacktrace();
+
     writeTextDump(message);
 }
 
@@ -118,6 +125,17 @@ void CrashHandler::install()
     bool expected = false;
     if (!installed.compare_exchange_strong(expected, true))
         return;
+
+    // デバッグ用エスケープハッチ:
+    // 環境変数 MIXCOMPARE_NO_CRASH_HANDLER が設定されている場合は独自ハンドラを入れない。
+    // JUCE の signal ハンドラはコールバック後に SIGKILL でプロセスを即殺するため、
+    // OS（macOS/Linux）の正規クラッシュレポート（シンボル付き）が生成されない。
+    // 原因箇所を OS のレポートで確認したい場合に、このスイッチで無効化する。
+    if (std::getenv("MIXCOMPARE_NO_CRASH_HANDLER") != nullptr)
+    {
+        juce::Logger::writeToLog("CrashHandler disabled via MIXCOMPARE_NO_CRASH_HANDLER");
+        return;
+    }
 
     juce::SystemStats::setApplicationCrashHandler(crashHandlerCallback);
     juce::Logger::writeToLog("CrashHandler installed. Dumps will be stored in "

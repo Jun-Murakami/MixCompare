@@ -4,6 +4,9 @@
 #include "StateManager.h"
 #include "ErrorManager.h"
 #include "../audio/MonkeyAudioFormat.h"
+#if JUCE_LINUX
+#include "../audio/FFmpegAACFormat.h"
+#endif
 
 namespace MixCompare
 {
@@ -21,6 +24,13 @@ PlaylistManager::PlaylistManager(StateManager* sm)
     if (mc3::MediaFoundationAACFormat::isMediaFoundationAvailable())
     {
         formatManager.registerFormat(new mc3::MediaFoundationAACFormat(), false);
+    }
+#endif
+#if JUCE_LINUX
+    // Linux: FFmpeg(libav*) 経由の AAC/M4A フォーマットを追加（実行時に利用可能な場合のみ）
+    if (mc3::FFmpegAACFormat::isFFmpegAvailable())
+    {
+        formatManager.registerFormat(new mc3::FFmpegAACFormat(), false);
     }
 #endif
 

@@ -51,7 +51,14 @@ export const Transport: React.FC = () => {
   const hostSyncToggle = getToggleState('HOST_SYNC_ENABLED');
   // Sync capable は ToggleState が無い可能性がある（起動順次第）。なければtrue扱いにしてUIをブロックしない。
   const hostSyncCapableToggle = getToggleState('HOST_SYNC_CAPABLE');
-  const isHostSync = !!hostSyncToggle?.getValue();
+  // HOST_SYNC_ENABLED は valueChangedEvent を購読して再描画を駆動する。
+  // 購読しないと、ネイティブ/ホスト側で値が変わってもコンポーネントが再描画されず、
+  // クロージャに古い isHostSync が残り、Syncボタンのトグル判定（!isHostSync）が
+  // 反転して「解除できない（再度ONになる）」不具合になる。
+  const isHostSync = useJuceStore(
+    hostSyncToggle?.valueChangedEvent,
+    () => !!hostSyncToggle?.getValue()
+  );
   // ネイティブのHOST_SYNC_CAPABLEを購読して有効/無効を切替（未到着時は一時的に有効）
   const isHostSyncCapable = useJuceStore(
     hostSyncCapableToggle?.valueChangedEvent,
@@ -563,7 +570,12 @@ export const Transport: React.FC = () => {
                   opacity: isHostSyncCapable ? 1 : 0.4,
                 }}
                 startIcon={<Sync fontSize='small' sx={{ mr: -1 }} />}
-                onClick={() => isHostSyncCapable && hostSyncToggle?.setValue(!isHostSync)}
+                onClick={() => {
+                  if (!isHostSyncCapable) return;
+                  // クリック時点の最新値を直接参照してトグル（古いクロージャ値での反転を防止）
+                  const cur = !!hostSyncToggle?.getValue();
+                  hostSyncToggle?.setValue(!cur);
+                }}
                 disabled={!isHostSyncCapable}
               >
                 Sync to Host
