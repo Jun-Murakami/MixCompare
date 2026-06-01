@@ -174,23 +174,13 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(MixCompare PRIVATE ${X11_LIBRARIES})
     target_include_directories(MixCompare PRIVATE ${X11_INCLUDE_DIR})
 
-    # Linux: m4a/AAC 再生のための FFmpeg 連携（FFmpegAACFormat）。
-    #  - ビルド時に必要なのは dev ヘッダのみ（include パス）。共有ライブラリへのリンクはしない。
-    #  - 実行時に dlopen でディストリ提供の libav* を読み込む（無ければ AAC のみ無効化）。
-    #  - AGPL-3.0 プロジェクトであり、FFmpeg(LGPL/GPL) は同梱せずシステム提供を参照する方針。
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(FFMPEG QUIET libavformat libavcodec libavutil libswresample)
-    endif()
-    if(FFMPEG_FOUND)
-        target_include_directories(MixCompare PRIVATE ${FFMPEG_INCLUDE_DIRS})
-        target_compile_definitions(MixCompare PRIVATE MIXCOMPARE_HAVE_FFMPEG=1)
-        target_link_libraries(MixCompare PRIVATE ${CMAKE_DL_LIBS}) # dlopen/dlsym 用
-        message(STATUS "MixCompare: FFmpeg dev headers found -> Linux m4a/AAC enabled (runtime dlopen)")
-    else()
-        message(WARNING "MixCompare: FFmpeg dev headers NOT found -> m4a/AAC playback disabled on Linux. "
-                        "Install: libavcodec-dev libavformat-dev libavutil-dev libswresample-dev")
-    endif()
+    # Linux: m4a/AAC 再生（FFmpegAACFormat）。
+    #  実行時にシステムの `ffmpeg` 実行ファイルをサブプロセス起動して WAV へデコードする
+    #  方式に変更したため、ビルド時の FFmpeg dev ヘッダ依存・dlopen 用 libdl リンク・
+    #  MIXCOMPARE_HAVE_FFMPEG 定義はいずれも不要。FFmpeg のメジャーバージョン差による
+    #  構造体 ABI 非互換の影響を受けない（詳細は FFmpegAACFormat.cpp 冒頭コメント）。
+    #  実行環境に `ffmpeg` が無ければ AAC のみ無効化され、プラグイン自体は正常動作する。
+    message(STATUS "MixCompare: Linux m4a/AAC via system 'ffmpeg' subprocess (no build-time FFmpeg deps)")
 endif()
 
 # macOS 固有の設定（wraptool / codesign のヘッダパッド不足対策）

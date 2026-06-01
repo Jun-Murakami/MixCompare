@@ -5,627 +5,171 @@
 #if JUCE_LINUX
 
 //==============================================================================
-// MIXCOMPARE_HAVE_FFMPEG はビルド時に FFmpeg dev ヘッダが見つかった場合のみ CMake が定義する。
-// 未定義時は「常に利用不可」のスタブを提供し、ビルドを通す（実行時に AAC が無効になるだけ）。
+// Linux 向け AAC / M4A / MP4 デコード。
+//
+// 実装方針（重要）:
+//   システムの `ffmpeg` 実行ファイルをサブプロセスで起動し、入力を WAV(float32 LE) の
+//   一時ファイルへ丸ごとデコードする。その一時ファイルを JUCE の WavAudioFormat で読み、
+//   読み取りは内部 WAV リーダーへ委譲する。
+//
+//   なぜ libav* を直接 dlopen/link しないのか:
+//     - 以前は libav* を dlopen し、AVCodecContext 等の構造体フィールドへ直接アクセス
+//       していた。しかし FFmpeg はメジャーバージョン間で構造体 ABI（フィールドのオフ
+//       セットや sizeof）を保証しない。ビルド環境(例: Docker の FFmpeg6)と実行環境
+//       (例: ホストの FFmpeg8)で AVCodecContext のレイアウトが食い違い、ch_layout 等
+//       を別オフセットから読んでしまい "Input channel layout \"\"" 等で失敗していた。
+//     - `ffmpeg` CLI の入出力仕様（pcm_f32le / WAV 出力）はメジャーをまたいで安定して
+//       いるため、CLI 経由なら FFmpeg のバージョンに依存せず動作する。
+//     - ライセンス方針（AGPL）にも合致: FFmpeg を同梱せず、システム提供のバイナリを
+//       実行時に参照するだけ。dev ヘッダへのビルド時依存も不要になった。
+//
+// 利用形態の前提:
+//   呼び出し側（PluginProcessor / InMemoryPlaybackSource::readAllToBuffer）は
+//   reader.lengthInSamples と reader.read() で全サンプルを一括取得する。よってここでは
+//   「先頭から全体をデコードして WavAudioFormat リーダーを返す」だけでよく、サンプル単位の
+//   ランダムシークを自前実装する必要はない（シークが要っても WAV リーダーが面倒を見る）。
 //==============================================================================
-#if ! defined (MIXCOMPARE_HAVE_FFMPEG)
 
-namespace mc3 {
-
-FFmpegAACFormat::FFmpegAACFormat()  : AudioFormat ("FFmpeg AAC", ".m4a .aac .mp4 .m4b") {}
-FFmpegAACFormat::~FFmpegAACFormat() = default;
-
-juce::Array<int> FFmpegAACFormat::getPossibleSampleRates() { return {}; }
-juce::Array<int> FFmpegAACFormat::getPossibleBitDepths()   { return {}; }
-
-juce::AudioFormatReader* FFmpegAACFormat::createReaderFor (juce::InputStream* s, bool deleteStreamIfOpeningFails)
-{
-    if (deleteStreamIfOpeningFails)
-        delete s;
-    return nullptr;
-}
-
-std::unique_ptr<juce::AudioFormatWriter> FFmpegAACFormat::createWriterFor (
-    std::unique_ptr<juce::OutputStream>&, const juce::AudioFormatWriterOptions&)
-{
-    return nullptr;
-}
-
-bool FFmpegAACFormat::isFFmpegAvailable() { return false; }
-
-} // namespace mc3
-
-#else // MIXCOMPARE_HAVE_FFMPEG
-
-#include <dlfcn.h>
-#include <cstdint>
-#include <cstdio> // SEEK_SET / SEEK_CUR / SEEK_END
-#include <vector>
-
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavformat/avio.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/avutil.h>
-#include <libavutil/opt.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/samplefmt.h>
-#include <libavutil/frame.h>
-#include <libavutil/mem.h>
-#include <libswresample/swresample.h>
-}
+#include <memory>
 
 namespace mc3 {
 namespace {
 
 //==============================================================================
-// FFmpeg 共有ライブラリの実行時ローダー（プロセス内で一度だけ初期化）。
-// ヘッダのメジャーバージョンと一致する versioned soname を dlopen し、必要シンボルを解決する。
+// `ffmpeg` 実行ファイルを探す。PATH 上と一般的な絶対パスを順に確認する。
+juce::File findFFmpegBinary()
+{
+    // 1) よくある絶対パス（PATH に頼らず確実に見つける）
+    const char* candidates[] = {
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/bin/ffmpeg",
+        "/snap/bin/ffmpeg",
+    };
+    for (auto* c : candidates)
+    {
+        juce::File f (c);
+        if (f.existsAsFile())
+            return f;
+    }
+
+    // 2) PATH を走査
+    const juce::String pathEnv = juce::SystemStats::getEnvironmentVariable ("PATH", {});
+    for (const auto& dir : juce::StringArray::fromTokens (pathEnv, ":", ""))
+    {
+        if (dir.isEmpty())
+            continue;
+        juce::File f = juce::File (dir).getChildFile ("ffmpeg");
+        if (f.existsAsFile())
+            return f;
+    }
+
+    return {};
+}
+
+// 一度だけ ffmpeg を探してキャッシュする（スレッドセーフ）。
+const juce::File& cachedFFmpegBinary()
+{
+    static const juce::File ff = findFFmpegBinary();
+    return ff;
+}
+
 //==============================================================================
-struct FFmpegLib
+// 入力ファイルを ffmpeg で WAV(float32 LE) の一時ファイルへデコードする。
+// 成功時、出力先の一時ファイルを返す（呼び出し側が使用後に削除する）。失敗時は無効 File。
+//
+// 重要: stdout(pipe:1) へ WAV を書かせてはいけない。ffmpeg はパイプ出力をシークできず、
+// WAV の RIFF/data チャンクサイズに本当の値を書けないためプレースホルダ 0xFFFFFFFF を
+// 書く。すると JUCE の WavAudioFormat が長さを「約 536,870,911 サンプル(=44.1k/2ch で
+// 約 202 分)」と誤読し、再生位置も破綻する。一時「ファイル」へ書けば ffmpeg がシークして
+// 正しいサイズを書き込むため、この問題が起きない。
+juce::File decodeToWavFile (const juce::File& input)
 {
-    bool ok = false;
+    const juce::File& ff = cachedFFmpegBinary();
+    if (! ff.existsAsFile() || ! input.existsAsFile())
+        return {};
 
-    // libavutil
-    decltype (&::av_frame_alloc)               av_frame_alloc = nullptr;
-    decltype (&::av_frame_free)                av_frame_free = nullptr;
-    decltype (&::av_frame_unref)               av_frame_unref = nullptr;
-    decltype (&::av_freep)                     av_freep = nullptr;
-    decltype (&::av_malloc)                    av_malloc = nullptr;
-    decltype (&::av_rescale_q)                 av_rescale_q = nullptr;
-    decltype (&::av_channel_layout_default)    av_channel_layout_default = nullptr;
-    decltype (&::av_channel_layout_uninit)     av_channel_layout_uninit = nullptr;
+    const juce::File outFile = juce::File::createTempFile ("mixcompare_aac_decode.wav");
 
-    // libswresample
-    decltype (&::swr_alloc_set_opts2)          swr_alloc_set_opts2 = nullptr;
-    decltype (&::swr_init)                     swr_init = nullptr;
-    decltype (&::swr_convert)                  swr_convert = nullptr;
-    decltype (&::swr_free)                     swr_free = nullptr;
+    juce::StringArray args;
+    args.add (ff.getFullPathName());
+    args.add ("-v");           args.add ("error");      // 余計なログを抑制
+    args.add ("-nostdin");                               // 標準入力を待たない
+    args.add ("-y");                                     // 出力（temp）を上書き
+    args.add ("-i");           args.add (input.getFullPathName());
+    args.add ("-map");         args.add ("0:a:0");       // 最初の音声ストリームのみ
+    args.add ("-vn");                                    // 映像/アルバムアート無視
+    args.add ("-c:a");         args.add ("pcm_f32le");   // float32 PCM
+    args.add ("-f");           args.add ("wav");         // WAV コンテナ
+    args.add (outFile.getFullPathName());                // 一時ファイルへ
 
-    // libavcodec
-    decltype (&::avcodec_find_decoder)         avcodec_find_decoder = nullptr;
-    decltype (&::avcodec_alloc_context3)       avcodec_alloc_context3 = nullptr;
-    decltype (&::avcodec_parameters_to_context) avcodec_parameters_to_context = nullptr;
-    decltype (&::avcodec_open2)                avcodec_open2 = nullptr;
-    decltype (&::avcodec_free_context)         avcodec_free_context = nullptr;
-    decltype (&::avcodec_send_packet)          avcodec_send_packet = nullptr;
-    decltype (&::avcodec_receive_frame)        avcodec_receive_frame = nullptr;
-    decltype (&::avcodec_flush_buffers)        avcodec_flush_buffers = nullptr;
-    decltype (&::av_packet_alloc)              av_packet_alloc = nullptr;
-    decltype (&::av_packet_free)               av_packet_free = nullptr;
-    decltype (&::av_packet_unref)              av_packet_unref = nullptr;
-
-    // libavformat
-    decltype (&::avformat_alloc_context)       avformat_alloc_context = nullptr;
-    decltype (&::avformat_open_input)          avformat_open_input = nullptr;
-    decltype (&::avformat_find_stream_info)    avformat_find_stream_info = nullptr;
-    decltype (&::avformat_close_input)         avformat_close_input = nullptr;
-    decltype (&::av_read_frame)                av_read_frame = nullptr;
-    decltype (&::avformat_seek_file)           avformat_seek_file = nullptr;
-    decltype (&::avio_alloc_context)           avio_alloc_context = nullptr;
-    decltype (&::avio_context_free)            avio_context_free = nullptr;
-    decltype (&::av_find_best_stream)          av_find_best_stream = nullptr;
-
-    FFmpegLib() { load(); }
-
-private:
-    void* handles[4] = { nullptr, nullptr, nullptr, nullptr };
-
-    static juce::String soname (const char* base, int major)
+    // wantStdErr も指定する: 指定しないと ffmpeg のログ出力先パイプが詰まり、
+    // エラー時にプロセスがブロックしうる（出力自体は読まず破棄でよい）。
+    juce::ChildProcess proc;
+    if (! proc.start (args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
     {
-        return juce::String (base) + ".so." + juce::String (major);
+        outFile.deleteFile();
+        return {};
     }
 
-    void load()
+    // 終了まで待つ（最大 60 秒。通常は数秒）。
+    if (! proc.waitForProcessToFinish (60000))
     {
-        // 依存順に開く（avutil -> swresample -> avcodec -> avformat）。
-        handles[0] = dlopen (soname ("libavutil",      LIBAVUTIL_VERSION_MAJOR).toRawUTF8(),      RTLD_NOW | RTLD_GLOBAL);
-        handles[1] = dlopen (soname ("libswresample",  LIBSWRESAMPLE_VERSION_MAJOR).toRawUTF8(),  RTLD_NOW | RTLD_GLOBAL);
-        handles[2] = dlopen (soname ("libavcodec",     LIBAVCODEC_VERSION_MAJOR).toRawUTF8(),     RTLD_NOW | RTLD_GLOBAL);
-        handles[3] = dlopen (soname ("libavformat",    LIBAVFORMAT_VERSION_MAJOR).toRawUTF8(),    RTLD_NOW | RTLD_GLOBAL);
-
-        if (handles[0] == nullptr || handles[1] == nullptr || handles[2] == nullptr || handles[3] == nullptr)
-            return;
-
-        auto* hUtil   = handles[0];
-        auto* hSwr    = handles[1];
-        auto* hCodec  = handles[2];
-        auto* hFormat = handles[3];
-
-        // dlsym して関数ポインタへ代入。1 つでも欠ければ ok=false のまま（= 利用不可）。
-        #define MC_LOAD(handle, fn)                                                     \
-            do {                                                                        \
-                fn = reinterpret_cast<decltype (fn)> (dlsym ((handle), #fn));           \
-                if (fn == nullptr) return;                                              \
-            } while (0)
-
-        MC_LOAD (hUtil, av_frame_alloc);
-        MC_LOAD (hUtil, av_frame_free);
-        MC_LOAD (hUtil, av_frame_unref);
-        MC_LOAD (hUtil, av_freep);
-        MC_LOAD (hUtil, av_malloc);
-        MC_LOAD (hUtil, av_rescale_q);
-        MC_LOAD (hUtil, av_channel_layout_default);
-        MC_LOAD (hUtil, av_channel_layout_uninit);
-
-        MC_LOAD (hSwr, swr_alloc_set_opts2);
-        MC_LOAD (hSwr, swr_init);
-        MC_LOAD (hSwr, swr_convert);
-        MC_LOAD (hSwr, swr_free);
-
-        MC_LOAD (hCodec, avcodec_find_decoder);
-        MC_LOAD (hCodec, avcodec_alloc_context3);
-        MC_LOAD (hCodec, avcodec_parameters_to_context);
-        MC_LOAD (hCodec, avcodec_open2);
-        MC_LOAD (hCodec, avcodec_free_context);
-        MC_LOAD (hCodec, avcodec_send_packet);
-        MC_LOAD (hCodec, avcodec_receive_frame);
-        MC_LOAD (hCodec, avcodec_flush_buffers);
-        MC_LOAD (hCodec, av_packet_alloc);
-        MC_LOAD (hCodec, av_packet_free);
-        MC_LOAD (hCodec, av_packet_unref);
-
-        MC_LOAD (hFormat, avformat_alloc_context);
-        MC_LOAD (hFormat, avformat_open_input);
-        MC_LOAD (hFormat, avformat_find_stream_info);
-        MC_LOAD (hFormat, avformat_close_input);
-        MC_LOAD (hFormat, av_read_frame);
-        MC_LOAD (hFormat, avformat_seek_file);
-        MC_LOAD (hFormat, avio_alloc_context);
-        MC_LOAD (hFormat, avio_context_free);
-        MC_LOAD (hFormat, av_find_best_stream);
-
-        #undef MC_LOAD
-
-        ok = true;
+        proc.kill();
+        outFile.deleteFile();
+        return {};
     }
-};
 
-const FFmpegLib& getFFmpeg()
-{
-    // 関数ローカル static により初回呼び出し時に一度だけ初期化される（スレッドセーフ）。
-    static const FFmpegLib lib;
-    return lib;
+    if (! outFile.existsAsFile() || outFile.getSize() <= 44) // WAV ヘッダより大きいこと
+    {
+        outFile.deleteFile();
+        return {};
+    }
+
+    return outFile;
 }
 
 } // anonymous namespace
 
 //==============================================================================
+// reader は「デコード済み WAV 一時ファイルを JUCE の WavAudioFormat で読む」ラッパー。
+// 入力ストリームから元ファイルパスを得られないため、createReaderFor 側で先に
+// デコードを済ませ、出来上がった WAV リーダーをこのクラスが所有・委譲する。
+// 一時ファイルは Reader の生存期間中保持し、破棄時に削除する。
+//==============================================================================
 class FFmpegAACFormat::Reader : public juce::AudioFormatReader
 {
 public:
-    Reader (juce::InputStream* sourceStream, const juce::String& readerFormatName)
-        : AudioFormatReader (sourceStream, readerFormatName)
+    Reader (juce::AudioFormatReader* wavReaderToOwn, const juce::File& tempToOwn)
+        : AudioFormatReader (nullptr, "FFmpeg AAC"),
+          inner (wavReaderToOwn),
+          tempFile (tempToOwn)
     {
-        if (! openAll())
-            cleanup();
+        // 基底のメタ情報を内部 WAV リーダーから引き写す。
+        sampleRate            = inner->sampleRate;
+        bitsPerSample         = inner->bitsPerSample;
+        lengthInSamples       = inner->lengthInSamples;
+        numChannels           = inner->numChannels;
+        usesFloatingPointData = inner->usesFloatingPointData;
+        metadataValues        = inner->metadataValues;
     }
 
     ~Reader() override
     {
-        cleanup();
+        inner.reset();             // WAV ファイルへのハンドルを先に閉じる
+        tempFile.deleteFile();     // その後に一時ファイルを削除
     }
-
-    bool isValid() const noexcept
-    {
-        return dec != nullptr && sampleRate > 0.0 && numChannels > 0;
-    }
-
-    // createReaderFor 側で deleteStreamIfOpeningFails==false のとき、基底クラスに
-    // ストリームを破棄させないためデタッチする（所有権を呼び出し元へ戻す）。
-    void detachStream() noexcept { input = nullptr; }
 
     bool readSamples (int* const* destSamples, int numDestChannels, int startOffsetInDestBuffer,
                       juce::int64 startSampleInFile, int numSamples) override
     {
-        const juce::ScopedLock sl (lock);
-
-        if (dec == nullptr)
-            return false;
-
-        if (startSampleInFile != currentReadSample)
-        {
-            doSeek (startSampleInFile);
-            currentReadSample = startSampleInFile;
-        }
-
-        int produced = 0;
-
-        while (produced < numSamples && ! endOfStream)
-        {
-            if (pendingReadPos >= pendingNumSamples)
-            {
-                if (! decodeNextChunk())
-                    break;
-
-                // シーク直後: 目標サンプルまで読み飛ばす。
-                if (pendingStartSample < currentReadSample)
-                {
-                    const juce::int64 skip = juce::jmin ((juce::int64) (pendingNumSamples - pendingReadPos),
-                                                         currentReadSample - pendingStartSample);
-                    pendingReadPos     += (int) skip;
-                    pendingStartSample += skip;
-                }
-                continue;
-            }
-
-            // デコード結果が要求位置より先（前方ギャップ）なら無音で埋める。
-            if (pendingStartSample > currentReadSample)
-            {
-                const int gap = (int) juce::jmin ((juce::int64) (numSamples - produced),
-                                                  pendingStartSample - currentReadSample);
-                writeSilence (destSamples, numDestChannels, startOffsetInDestBuffer + produced, gap);
-                produced          += gap;
-                currentReadSample += gap;
-                continue;
-            }
-
-            const int avail  = pendingNumSamples - pendingReadPos;
-            const int toCopy = juce::jmin (avail, numSamples - produced);
-
-            for (int ch = 0; ch < numDestChannels; ++ch)
-            {
-                if (destSamples[ch] == nullptr)
-                    continue;
-
-                float* dest = reinterpret_cast<float*> (destSamples[ch]) + startOffsetInDestBuffer + produced;
-
-                if (ch < (int) numChannels)
-                {
-                    const float* src = pending.getReadPointer (ch) + pendingReadPos;
-                    std::memcpy (dest, src, sizeof (float) * (size_t) toCopy);
-                }
-                else
-                {
-                    std::memset (dest, 0, sizeof (float) * (size_t) toCopy);
-                }
-            }
-
-            pendingReadPos     += toCopy;
-            pendingStartSample += toCopy;
-            produced           += toCopy;
-            currentReadSample  += toCopy;
-        }
-
-        // 末尾（EOF など）は無音で埋める。
-        if (produced < numSamples)
-        {
-            writeSilence (destSamples, numDestChannels, startOffsetInDestBuffer + produced, numSamples - produced);
-            currentReadSample += (numSamples - produced);
-        }
-
-        return true;
+        return inner->readSamples (destSamples, numDestChannels, startOffsetInDestBuffer,
+                                   startSampleInFile, numSamples);
     }
 
 private:
-    //==============================================================================
-    // メモリ上の入力データに対する AVIO コールバック
-    static int readPacket (void* opaque, uint8_t* buf, int bufSize)
-    {
-        auto* self = static_cast<Reader*> (opaque);
-        const size_t total = self->data.getSize();
-
-        if (self->dataPos >= total)
-            return AVERROR_EOF;
-
-        const size_t remaining = total - self->dataPos;
-        const int n = (int) juce::jmin ((size_t) bufSize, remaining);
-        std::memcpy (buf, static_cast<const uint8_t*> (self->data.getData()) + self->dataPos, (size_t) n);
-        self->dataPos += (size_t) n;
-        return n;
-    }
-
-    static int64_t seekIO (void* opaque, int64_t offset, int whence)
-    {
-        auto* self = static_cast<Reader*> (opaque);
-        const int64_t total = (int64_t) self->data.getSize();
-
-        if (whence == AVSEEK_SIZE)
-            return total;
-
-        int64_t newPos;
-        switch (whence & ~AVSEEK_FORCE)
-        {
-            case SEEK_SET: newPos = offset; break;
-            case SEEK_CUR: newPos = (int64_t) self->dataPos + offset; break;
-            case SEEK_END: newPos = total + offset; break;
-            default:       return -1;
-        }
-
-        newPos = juce::jlimit ((int64_t) 0, total, newPos);
-        self->dataPos = (size_t) newPos;
-        return newPos;
-    }
-
-    //==============================================================================
-    bool openAll()
-    {
-        const auto& ff = getFFmpeg();
-        if (! ff.ok)
-            return false;
-
-        // 入力ストリーム全体をメモリへ読み込み、メモリ AVIO で扱う。
-        input->setPosition (0);
-        input->readIntoMemoryBlock (data);
-        if (data.getSize() == 0)
-            return false;
-        dataPos = 0;
-
-        const int ioBufSize = 32768;
-        auto* ioBuf = static_cast<unsigned char*> (ff.av_malloc (ioBufSize));
-        if (ioBuf == nullptr)
-            return false;
-
-        avio = ff.avio_alloc_context (ioBuf, ioBufSize, 0, this, &readPacket, nullptr, &seekIO);
-        if (avio == nullptr)
-        {
-            ff.av_freep (&ioBuf);
-            return false;
-        }
-
-        fmt = ff.avformat_alloc_context();
-        if (fmt == nullptr)
-            return false;
-
-        fmt->pb     = avio;
-        fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
-
-        AVFormatContext* openCtx = fmt;
-        if (ff.avformat_open_input (&openCtx, nullptr, nullptr, nullptr) < 0)
-        {
-            // open_input 失敗時は fmt は解放済み。AVIO は CUSTOM_IO なので自前で解放する。
-            fmt = nullptr;
-            return false;
-        }
-        fmt = openCtx;
-
-        if (ff.avformat_find_stream_info (fmt, nullptr) < 0)
-            return false;
-
-        const AVCodec* codec = nullptr;
-        audioStreamIndex = ff.av_find_best_stream (fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
-        if (audioStreamIndex < 0 || codec == nullptr)
-            return false;
-
-        AVStream* st = fmt->streams[audioStreamIndex];
-        streamTimeBase = st->time_base;
-
-        dec = ff.avcodec_alloc_context3 (codec);
-        if (dec == nullptr)
-            return false;
-
-        if (ff.avcodec_parameters_to_context (dec, st->codecpar) < 0)
-            return false;
-
-        if (ff.avcodec_open2 (dec, codec, nullptr) < 0)
-            return false;
-
-        const int chans = dec->ch_layout.nb_channels;
-        if (dec->sample_rate <= 0 || chans <= 0)
-            return false;
-
-        sampleRate          = (double) dec->sample_rate;
-        numChannels         = (unsigned int) chans;
-        bitsPerSample       = 32;
-        usesFloatingPointData = true;
-
-        // 長さ（サンプル数）を算出。stream->duration を優先し、無ければコンテナ全体長から。
-        if (st->duration != AV_NOPTS_VALUE && st->duration > 0)
-            lengthInSamples = ff.av_rescale_q (st->duration, streamTimeBase, AVRational { 1, dec->sample_rate });
-        else if (fmt->duration != AV_NOPTS_VALUE && fmt->duration > 0)
-            lengthInSamples = (juce::int64) (((double) fmt->duration / (double) AV_TIME_BASE) * sampleRate);
-        else
-            lengthInSamples = 0;
-
-        // 出力は「ファイル本来のレート・チャンネル数のまま、planar float へフォーマット変換のみ」。
-        // ホストレートへのリサンプルは上位（InMemory/Streaming 側）が行う。
-        AVChannelLayout outLayout {};
-        ff.av_channel_layout_default (&outLayout, chans);
-
-        SwrContext* swrTmp = nullptr;
-        const int swrRet = ff.swr_alloc_set_opts2 (&swrTmp,
-                                                   &outLayout,        AV_SAMPLE_FMT_FLTP, dec->sample_rate,
-                                                   &dec->ch_layout,   dec->sample_fmt,    dec->sample_rate,
-                                                   0, nullptr);
-        ff.av_channel_layout_uninit (&outLayout);
-
-        if (swrRet < 0 || swrTmp == nullptr)
-            return false;
-        swr = swrTmp;
-
-        if (ff.swr_init (swr) < 0)
-            return false;
-
-        pkt   = ff.av_packet_alloc();
-        frame = ff.av_frame_alloc();
-        if (pkt == nullptr || frame == nullptr)
-            return false;
-
-        pending.setSize (chans, 0);
-        decodedSamplePos = 0;
-        currentReadSample = 0;
-        return true;
-    }
-
-    void cleanup()
-    {
-        const auto& ff = getFFmpeg();
-        if (! ff.ok)
-            return;
-
-        if (frame != nullptr) ff.av_frame_free (&frame);
-        if (pkt   != nullptr) ff.av_packet_free (&pkt);
-        if (swr   != nullptr) ff.swr_free (&swr);
-        if (dec   != nullptr) ff.avcodec_free_context (&dec);
-        if (fmt   != nullptr) ff.avformat_close_input (&fmt); // CUSTOM_IO のため avio は解放されない
-        if (avio  != nullptr)
-        {
-            ff.av_freep (&avio->buffer); // 現行の内部バッファを解放（途中で再確保され得る）
-            ff.avio_context_free (&avio);
-        }
-    }
-
-    //==============================================================================
-    void doSeek (juce::int64 targetSample)
-    {
-        const auto& ff = getFFmpeg();
-        const int64_t ts = ff.av_rescale_q (targetSample, AVRational { 1, (int) sampleRate }, streamTimeBase);
-
-        ff.avformat_seek_file (fmt, audioStreamIndex, INT64_MIN, ts, ts, 0);
-        ff.avcodec_flush_buffers (dec);
-
-        pendingReadPos   = 0;
-        pendingNumSamples = 0;
-        seekPending      = true;
-        draining         = false;
-        endOfStream      = false;
-        decodedSamplePos = targetSample; // 最初のフレームの pts で補正する
-    }
-
-    // 次のフレームをデコードして pending バッファへ詰める。EOF なら false。
-    bool decodeNextChunk()
-    {
-        const auto& ff = getFFmpeg();
-
-        for (;;)
-        {
-            const int ret = ff.avcodec_receive_frame (dec, frame);
-
-            if (ret == 0)
-            {
-                if (seekPending)
-                {
-                    int64_t pts = frame->best_effort_timestamp;
-                    if (pts == AV_NOPTS_VALUE)
-                        pts = frame->pts;
-                    if (pts != AV_NOPTS_VALUE)
-                        decodedSamplePos = ff.av_rescale_q (pts, streamTimeBase, AVRational { 1, (int) sampleRate });
-                    seekPending = false;
-                }
-                return convertFrameToPending();
-            }
-
-            if (ret == AVERROR_EOF)
-            {
-                endOfStream = true;
-                return false;
-            }
-
-            if (ret != AVERROR (EAGAIN))
-            {
-                endOfStream = true;
-                return false;
-            }
-
-            // EAGAIN: デコーダへ入力を供給する。
-            if (draining)
-            {
-                endOfStream = true;
-                return false;
-            }
-
-            const int rret = ff.av_read_frame (fmt, pkt);
-            if (rret < 0)
-            {
-                // 入力 EOF: null パケットでデコーダをフラッシュ。
-                ff.avcodec_send_packet (dec, nullptr);
-                draining = true;
-                continue;
-            }
-
-            if (pkt->stream_index != audioStreamIndex)
-            {
-                ff.av_packet_unref (pkt);
-                continue;
-            }
-
-            ff.avcodec_send_packet (dec, pkt);
-            ff.av_packet_unref (pkt);
-        }
-    }
-
-    bool convertFrameToPending()
-    {
-        const auto& ff = getFFmpeg();
-
-        const int inSamples = frame->nb_samples;
-        if (inSamples <= 0)
-        {
-            ff.av_frame_unref (frame);
-            return decodeNextChunk();
-        }
-
-        const int chans = pending.getNumChannels();
-        const int outCap = inSamples + 32; // リサンプル無しでも swr の遅延に余裕を持たせる
-
-        pending.setSize (chans, outCap, false, false, true);
-
-        // planar float 出力: 各チャンネルプレーンへ直接書き込む。
-        std::vector<uint8_t*> outPlanes ((size_t) chans, nullptr);
-        for (int c = 0; c < chans; ++c)
-            outPlanes[(size_t) c] = reinterpret_cast<uint8_t*> (pending.getWritePointer (c));
-
-        const int out = ff.swr_convert (swr,
-                                        outPlanes.data(), outCap,
-                                        const_cast<const uint8_t**> (frame->extended_data), inSamples);
-
-        ff.av_frame_unref (frame);
-
-        if (out < 0)
-        {
-            endOfStream = true;
-            return false;
-        }
-
-        pendingNumSamples = out;
-        pendingReadPos    = 0;
-        pendingStartSample = decodedSamplePos;
-        decodedSamplePos  += out;
-
-        if (out == 0)
-            return decodeNextChunk();
-
-        return true;
-    }
-
-    void writeSilence (int* const* destSamples, int numDestChannels, int startOffset, int num)
-    {
-        if (num <= 0)
-            return;
-        for (int ch = 0; ch < numDestChannels; ++ch)
-        {
-            if (destSamples[ch] == nullptr)
-                continue;
-            float* dest = reinterpret_cast<float*> (destSamples[ch]) + startOffset;
-            std::memset (dest, 0, sizeof (float) * (size_t) num);
-        }
-    }
-
-    //==============================================================================
-    juce::MemoryBlock data;
-    size_t dataPos = 0;
-
-    AVFormatContext* fmt = nullptr;
-    AVIOContext*     avio = nullptr;
-    AVCodecContext*  dec = nullptr;
-    SwrContext*      swr = nullptr;
-    AVPacket*        pkt = nullptr;
-    AVFrame*         frame = nullptr;
-
-    int       audioStreamIndex = -1;
-    AVRational streamTimeBase { 0, 1 };
-
-    juce::AudioBuffer<float> pending;
-    int          pendingReadPos = 0;
-    int          pendingNumSamples = 0;
-    juce::int64  pendingStartSample = 0; // pending[pendingReadPos] の絶対サンプル位置
-    juce::int64  decodedSamplePos = 0;   // 次にデコードされるフレーム先頭の絶対サンプル位置
-    juce::int64  currentReadSample = 0;  // 次に readSamples が期待する絶対サンプル位置
-    bool         seekPending = false;
-    bool         draining = false;
-    bool         endOfStream = false;
-
-    juce::CriticalSection lock;
+    std::unique_ptr<juce::AudioFormatReader> inner;
+    juce::File tempFile;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Reader)
 };
@@ -645,28 +189,62 @@ juce::Array<int> FFmpegAACFormat::getPossibleSampleRates()
 
 juce::Array<int> FFmpegAACFormat::getPossibleBitDepths()
 {
-    return { 16, 24, 32 };
+    // 実際のデコード出力は常に 32bit float（ffmpeg の pcm_f32le）。
+    return { 32 };
 }
 
 juce::AudioFormatReader* FFmpegAACFormat::createReaderFor (juce::InputStream* sourceStream,
                                                            bool deleteStreamIfOpeningFails)
 {
+    // この AudioFormat は「ファイル」を ffmpeg に渡す必要があるため、入力ストリームが
+    // ファイルに紐づく FileInputStream であることを前提とする（本プラグインの
+    // createReaderFor(File) 経由の利用ではこれが満たされる）。
+    std::unique_ptr<juce::InputStream> streamOwner (sourceStream);
+
     if (! isFFmpegAvailable())
+        return failReader (streamOwner, deleteStreamIfOpeningFails);
+
+    auto* fileStream = dynamic_cast<juce::FileInputStream*> (sourceStream);
+    if (fileStream == nullptr)
+        return failReader (streamOwner, deleteStreamIfOpeningFails);
+
+    const juce::File inputFile = fileStream->getFile();
+
+    const juce::File wavTemp = decodeToWavFile (inputFile);
+    if (! wavTemp.existsAsFile())
+        return failReader (streamOwner, deleteStreamIfOpeningFails);
+
+    // デコード済み WAV 一時ファイルを JUCE の WavAudioFormat で開く。
+    auto wavInput = std::make_unique<juce::FileInputStream> (wavTemp);
+    if (! wavInput->openedOk())
     {
-        if (deleteStreamIfOpeningFails)
-            delete sourceStream;
-        return nullptr;
+        wavTemp.deleteFile();
+        return failReader (streamOwner, deleteStreamIfOpeningFails);
     }
 
-    auto reader = std::make_unique<Reader> (sourceStream, getFormatName());
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatReader> wavReader (
+        wav.createReaderFor (wavInput.get(), true));
+    if (wavReader == nullptr)
+    {
+        wavTemp.deleteFile();
+        return failReader (streamOwner, deleteStreamIfOpeningFails);
+    }
 
-    if (reader->isValid())
-        return reader.release();
+    wavInput.release(); // 所有権は wavReader へ渡った
 
-    // 失敗時: deleteStreamIfOpeningFails==false なら所有権を呼び出し元へ戻す。
+    // 元の入力ストリームはもう不要（ffmpeg は File から直接読んだ）。破棄してよい。
+    streamOwner.reset();
+
+    return new Reader (wavReader.release(), wavTemp);
+}
+
+juce::AudioFormatReader* FFmpegAACFormat::failReader (std::unique_ptr<juce::InputStream>& streamOwner,
+                                                      bool deleteStreamIfOpeningFails)
+{
+    // deleteStreamIfOpeningFails==false のとき、呼び出し元へ所有権を戻す（破棄しない）。
     if (! deleteStreamIfOpeningFails)
-        reader->detachStream();
-
+        streamOwner.release();
     return nullptr;
 }
 
@@ -678,11 +256,9 @@ std::unique_ptr<juce::AudioFormatWriter> FFmpegAACFormat::createWriterFor (
 
 bool FFmpegAACFormat::isFFmpegAvailable()
 {
-    return getFFmpeg().ok;
+    return cachedFFmpegBinary().existsAsFile();
 }
 
 } // namespace mc3
-
-#endif // MIXCOMPARE_HAVE_FFMPEG
 
 #endif // JUCE_LINUX

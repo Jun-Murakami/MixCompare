@@ -27,7 +27,7 @@ PlaylistManager::PlaylistManager(StateManager* sm)
     }
 #endif
 #if JUCE_LINUX
-    // Linux: FFmpeg(libav*) 経由の AAC/M4A フォーマットを追加（実行時に利用可能な場合のみ）
+    // Linux: ffmpeg サブプロセス経由の AAC/M4A フォーマットを追加（ffmpeg 実行ファイルがある場合のみ）
     if (mc3::FFmpegAACFormat::isFFmpegAvailable())
     {
         formatManager.registerFormat(new mc3::FFmpegAACFormat(), false);
