@@ -9,6 +9,13 @@
 #include <optional>
 #include <vector>
 
+namespace mc {
+// Linux WebView スケール補正（global-scale）のディスクキャッシュ。createEditor で早期適用し、
+//  apply_layout で実測した値を書き戻す。未測定環境では何もしない（既存挙動を変えない）。
+void applyCachedWebViewScaleCorrection();
+void cacheWebViewScaleCorrection(double globalScale);
+}
+
 class MixCompare3AudioProcessorEditor : public juce::AudioProcessorEditor,
                                        public MixCompare::StateManager::Listener,
                                        public MixCompare::TransportManager::Listener,

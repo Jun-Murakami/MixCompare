@@ -444,6 +444,7 @@ bool MixCompare3AudioProcessor::hasEditor() const { return true; }
 
 juce::AudioProcessorEditor* MixCompare3AudioProcessor::createEditor()
 {
+    mc::applyCachedWebViewScaleCorrection();
     return new MixCompare3AudioProcessorEditor(*this);
 }
 
