@@ -1,3 +1,23 @@
+diff --git a/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp b/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp
+index e8c1cfc9f0..7eba5eef29 100644
+--- a/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp
++++ b/modules/juce_audio_plugin_client/juce_audio_plugin_client_LV2.cpp
+@@ -1598,8 +1598,13 @@ public:
+         if (editor == nullptr)
+             return 0;
+ 
+-        const auto logicalBounds = plugin->getScaleManager().convertFromHostBounds ({ width, height }).toNearestIntEdges();
+-        editor->setBoundsConstrained (logicalBounds.withZeroOrigin());
++        // ホスト指定サイズ(物理px)を editor のローカル座標へ。convertFromHostBounds は peerScale のみを
++        //  割り戻して「wrapper ローカル」を返すが、editor が AffineTransform(applyDisplayScale の
++        //  webViewDpr/peerScale)を持つ場合その逆変換が抜け、editor を過大(=wrapper サイズ)に setBounds して
++        //  しまう（KDE で transform=1.5 のとき host 588→editor 588→transform で 882…と膨張する不具合）。
++        //  VST3/CLAP wrapper と同様に editor->getLocalArea で transform を逆適用し editor-local へ直す。
++        const auto wrapperBounds = plugin->getScaleManager().convertFromHostBounds ({ width, height }).toNearestIntEdges();
++        editor->setBoundsConstrained (editor->getLocalArea (this, wrapperBounds).withZeroOrigin());
+ 
+         const auto bounds = getSizeToContainChild();
+         setSize (bounds.getWidth(), bounds.getHeight());
 diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
 index 46d5d82819..e2e1b0134f 100644
 --- a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
