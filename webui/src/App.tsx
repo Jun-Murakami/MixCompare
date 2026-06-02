@@ -178,11 +178,11 @@ function App() {
 
     juceBridge.whenReady(() => {
       juceBridge.callNative('system_action', 'ready');
-      // 初期サイズ・最小/最大サイズを「設計 CSS px × ratio」で確定させる。
-      //  WebView は表示の真の倍率(devicePixelRatio)を正しく拾うため、現在の innerWidth/innerHeight を
-      //  渡せば native 側で ratio = getWidth()/innerWidth（= DPR / ホスト総スケール）を求められる。
-      //  ホストが分数スケーリングを誤判定して間違った総スケールで窓を作っても、設計どおりの見た目に補正できる。
-      //  レイアウト確定後の値を使うため次フレームで送る。
+      // 現在の innerWidth/innerHeight(CSS px) を渡し、native 側でリサイズハンドル用の
+      //  ratio = getWidth()/innerWidth（CSS px → 論理 px 換算比）を確定させる。
+      //  第4引数に devicePixelRatio を添える。これは native 側 applyDisplayScale が Linux 埋め込み窓の
+      //  物理サイズ補正(transform = webViewDpr/peerScale)に使う「真のディスプレイ倍率」
+      //  （旧 globalScale 実測方式ではない）。レイアウト確定後の値を使うため次フレームで送る。
       requestAnimationFrame(() => {
         juceBridge.callNative('window_action', 'apply_layout', window.innerWidth, window.innerHeight, window.devicePixelRatio);
       });
@@ -213,30 +213,6 @@ function App() {
       const captureOptions: AddEventListenerOptions = { capture: true };
       window.removeEventListener('contextmenu', onContextMenu, captureOptions);
       document.removeEventListener('selectstart', onSelectStart, captureOptions);
-    };
-  }, []);
-
-  // DPR 変化追従: 別倍率のモニタへ移動するなどで devicePixelRatio が変わると、native の ratio(=DPR/peerScale)
-  //  が古くなり枠がズレる。matchMedia(resolution) で DPR 変化を検知して apply_layout を再送し、native 側に
-  //  「維持中の CSS サイズ × 新 ratio」で論理pxを再マッピングさせる。検知は一度きりなので毎回張り直す。
-  useEffect(() => {
-    let disposed = false;
-    let mql: MediaQueryList | null = null;
-    const onChange = () => {
-      if (disposed) return;
-      juceBridge.callNative('window_action', 'apply_layout', window.innerWidth, window.innerHeight, window.devicePixelRatio);
-      arm(); // 新しい DPR に対して張り直す
-    };
-    const arm = () => {
-      if (disposed) return;
-      mql?.removeEventListener('change', onChange);
-      mql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
-      mql.addEventListener('change', onChange);
-    };
-    arm();
-    return () => {
-      disposed = true;
-      mql?.removeEventListener('change', onChange);
     };
   }, []);
 

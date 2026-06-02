@@ -9,13 +9,6 @@
 #include <optional>
 #include <vector>
 
-namespace mc {
-// Linux WebView スケール補正（global-scale）のディスクキャッシュ。createEditor で早期適用し、
-//  apply_layout で実測した値を書き戻す。未測定環境では何もしない（既存挙動を変えない）。
-void applyCachedWebViewScaleCorrection();
-void cacheWebViewScaleCorrection(double globalScale);
-}
-
 class MixCompare3AudioProcessorEditor : public juce::AudioProcessorEditor,
                                        public MixCompare::StateManager::Listener,
                                        public MixCompare::TransportManager::Listener,
@@ -33,7 +26,8 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
-    
+    void setScaleFactor(float newScale) override;
+
     // プレイリスト更新をWebUIに送信
     void sendPlaylistUpdate();
     void sendTransportStateUpdate();
@@ -160,8 +154,9 @@ private:
     //  発散する（巨大化）/最小に貼り付く ため、必ず開始時固定とする。
     double webResizeRatioW { 1.0 };
     double webResizeRatioH { 1.0 };
-    // apply_layout（初期サイズの設計CSS合わせ）を初回だけ実行するためのフラグ
-    bool   initialLayoutApplied { false };
+    // WebUI が apply_layout で報告する devicePixelRatio（真のディスプレイ倍率）。
+    //  applyDisplayScale が Linux 埋め込み時のウィンドウ物理サイズ補正(transform)に使う。
+    double lastWebViewDpr { -1.0 };
     // APVTS state の保存サイズ（editorWidth/editorHeight）から復元したか。
     //  復元した場合、apply_layout の初回リサイズで保存値（論理px）を上書きしない（毎回リセットされるバグの修正）。
     bool   restoredFromSavedSize { false };
@@ -178,6 +173,9 @@ private:
     juce::uint32 resizeAckStartMs { 0 };
     juce::WebBrowserComponent::NativeFunctionCompletion pendingResizeCompletion;
     void resolveResizeAck();
+    // Linux 埋め込み時のウィンドウ物理サイズ補正（transform = webViewDpr/peerScale）。
+    //  Standalone は wrapperType で除外。setScaleFactor override と apply_layout から呼ぶ。
+    void applyDisplayScale();
 
     // --- リサイズ落ち着き後の「強制再同期」用 ---
     //  高頻度リサイズ後、ホストのコンテナ窓が中間サイズで取り残され、editor が既に最終サイズだと
