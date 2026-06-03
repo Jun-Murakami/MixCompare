@@ -10,7 +10,10 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  DragOverlay,
   type DragEndEvent,
+  type DragMoveEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 // useSortable, CSS は PlaylistItem に移動
@@ -20,7 +23,7 @@ import { Menu, MenuItem } from '@mui/material';
 import { Virtualizer, type VirtualizerHandle } from 'virtua';
 import { juceBridge } from '../bridge/juce';
 import { type PlaylistItem } from '../types';
-import PlaylistItemRow from './PlaylistItem';
+import PlaylistItemRow, { PlaylistItemOverlay } from './PlaylistItem';
 
 // 上記 SortableItem は PlaylistItem.tsx に分離
 
@@ -36,14 +39,28 @@ export const Playlist: React.FC = () => {
   const listContainerRef = useRef<HTMLDivElement>(null);
   const virtualizerRef = useRef<VirtualizerHandle>(null);
   const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
+  // ドラッグ中のアイテム id（DragOverlay のゴースト描画用）
+  const [activeId, setActiveId] = React.useState<string | null>(null);
   // JUCE更新を楽観操作の直後に抑制するための期限
   const suppressUntilRef = React.useRef<number>(0)
+  // ドラッグ操作中フラグ。ドラッグ中は JUCE からの 20〜60Hz の playlistUpdate を
+  // 適用せず、選択位置への自動スクロールも止める（オートスクロールとの競合＝
+  // 「端まで行くと元の位置に戻る」ループを防ぐ）。
+  const isDraggingRef = React.useRef<boolean>(false)
+  // ドラッグ中の自前オートスクロール。dnd-kit 組み込みのオートスクロールは
+  // ドラッグ開始時にキャッシュした矩形を基にスクロール量を決めるため、virtua が
+  // 高さを動的補正すると過剰スクロール→巻き戻しのループになる。これを切り、
+  // virtua が所有するスクロールコンテナを毎フレーム「現在値 + delta」で直接送る。
+  const autoScrollRef = React.useRef<{ speed: number; raf: number }>({ speed: 0, raf: 0 })
 
   // 仮想化: virtua の Virtualizer を利用（React Compiler 互換）。
   // スクロール要素は下部の listContainerRef、各行はほぼ固定高（約 20px）。
 
   // Auto-scroll to selected item when index changes (only if out of view)
   useEffect(() => {
+    // ドラッグ中は自動スクロールしない（dnd-kit のオートスクロールと scrollTop を
+    // 奪い合ってループになるため）。
+    if (isDraggingRef.current) return;
     if (currentPlaylistIndex >= 0 && currentPlaylistIndex < playlist.length) {
       const container = listContainerRef.current;
       if (!container) return;
@@ -79,6 +96,9 @@ export const Playlist: React.FC = () => {
   useEffect(() => {
     const playlistId = juceBridge.addEventListener('playlistUpdate', (data: unknown) => {
       const d = data as { items?: PlaylistItem[]; currentIndex?: number; revision?: number };
+      // ドラッグ中は一切適用しない。currentIndex を更新すると自動スクロール effect が
+      // 走り、items を差し替えると dnd-kit の並べ替え状態がリセットされて競合する。
+      if (isDraggingRef.current) return;
       // 抑制期間中でも currentIndex は反映して選択状態をずらさない
       if (typeof d.currentIndex === 'number') setCurrentPlaylistIndex(d.currentIndex);
       // items の差し替えは抑制期間が過ぎてから適用（並べ替えの楽観更新と競合しないように）
@@ -100,6 +120,13 @@ export const Playlist: React.FC = () => {
     };
   }, []);
 
+  // アンマウント時に自前オートスクロールの RAF を確実に止める
+  useEffect(() => {
+    return () => {
+      if (autoScrollRef.current.raf) cancelAnimationFrame(autoScrollRef.current.raf);
+    };
+  }, []);
+
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -111,7 +138,60 @@ export const Playlist: React.FC = () => {
     })
   );
 
+  // 自前オートスクロールの RAF ループ。毎フレーム「現在の scrollTop + speed」を書く。
+  // virtua が補正してもその時点の scrollTop から続けるだけなので奪い合いにならない。
+  const stepAutoScroll = () => {
+    const c = listContainerRef.current;
+    const { speed } = autoScrollRef.current;
+    if (c && speed !== 0) c.scrollTop += speed;
+    autoScrollRef.current.raf = requestAnimationFrame(stepAutoScroll);
+  };
+
+  const stopAutoScroll = () => {
+    autoScrollRef.current.speed = 0;
+    if (autoScrollRef.current.raf) cancelAnimationFrame(autoScrollRef.current.raf);
+    autoScrollRef.current.raf = 0;
+  };
+
+  const handleDragStart = (event: DragStartEvent) => {
+    isDraggingRef.current = true;
+    setActiveId(String(event.active.id));
+    autoScrollRef.current.speed = 0;
+    if (!autoScrollRef.current.raf) {
+      autoScrollRef.current.raf = requestAnimationFrame(stepAutoScroll);
+    }
+  };
+
+  const handleDragMove = (event: DragMoveEvent) => {
+    const c = listContainerRef.current;
+    if (!c) return;
+    // 現在のポインタ Y = 押下時の clientY + これまでの移動量
+    const activator = event.activatorEvent as PointerEvent;
+    const pointerY = (activator?.clientY ?? 0) + event.delta.y;
+    const rect = c.getBoundingClientRect();
+    const zone = 36; // 端からこの px 内に入ったらスクロール
+    const maxSpeed = 10; // px / frame
+    let speed = 0;
+    if (pointerY < rect.top + zone) {
+      const depth = Math.min(1, (rect.top + zone - pointerY) / zone);
+      speed = -depth * maxSpeed;
+    } else if (pointerY > rect.bottom - zone) {
+      const depth = Math.min(1, (pointerY - (rect.bottom - zone)) / zone);
+      speed = depth * maxSpeed;
+    }
+    autoScrollRef.current.speed = speed;
+  };
+
+  const handleDragCancel = () => {
+    isDraggingRef.current = false;
+    setActiveId(null);
+    stopAutoScroll();
+  };
+
   const handleDragEnd = async (event: DragEndEvent) => {
+    isDraggingRef.current = false;
+    setActiveId(null);
+    stopAutoScroll();
     const { active, over } = event;
 
     if (over && active.id !== over.id) {
@@ -198,6 +278,10 @@ export const Playlist: React.FC = () => {
   const handleMenuClose = () => {
     setAnchorEl(null);
   };
+
+  // ドラッグ中アイテムの index。virtua の keepMounted に渡し、オートスクロールで
+  // 画面外へ出てもアンマウントさせない（dnd-kit のアクティブ要素を失わせない）。
+  const activeIndex = activeId ? playlist.findIndex((it) => it.id === activeId) : -1;
 
   return (
     // ルートは親の割り当て高いっぱいを使う
@@ -319,7 +403,13 @@ export const Playlist: React.FC = () => {
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
+            // 組み込みオートスクロールは virtua と競合してループするため切り、
+            // onDragMove + RAF の自前オートスクロールで代替する。
+            autoScroll={false}
+            onDragStart={handleDragStart}
+            onDragMove={handleDragMove}
             onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
             // virtua は各行を position:absolute の 1 行分ラッパーで包む。
             // restrictToParentElement はドラッグ対象の「親要素」（＝その 1 行分ラッパー）に
             // 移動をクランプするため、行を全く動かせず DnD が壊れる。
@@ -331,6 +421,8 @@ export const Playlist: React.FC = () => {
                * virtua の Virtualizer は scrollRef のスクロール要素内で可視範囲のみを描画する。
                * 行の前に他要素は無いので startMargin=0。各行はほぼ固定高なので itemSize=20 をヒントに与える。
                * SortableContext には全 id を渡しているので、未描画行があっても DnD の整合は保たれる。
+               * keepMounted: ドラッグ中の行はオートスクロールで画面外に出ても常時マウントし、
+               * dnd-kit のアクティブ要素（とその親矩形）を失わせない＝スクロールのループを防ぐ。
                */}
               <Virtualizer
                 ref={virtualizerRef}
@@ -338,6 +430,7 @@ export const Playlist: React.FC = () => {
                 startMargin={0}
                 itemSize={20}
                 bufferSize={100}
+                keepMounted={activeIndex >= 0 ? [activeIndex] : undefined}
               >
                 {playlist.map((item, index) => (
                   <PlaylistItemRow
@@ -351,6 +444,16 @@ export const Playlist: React.FC = () => {
                 ))}
               </Virtualizer>
             </SortableContext>
+            {/*
+             * ドラッグ中のゴーストは DragOverlay でポータル描画し、カーソルに追従させる。
+             * リスト内の元の行は virtua がスクロールで unmount しうるが、ゴーストは
+             * 独立して描画されるので消えない。縦方向のみ追従させる。
+             */}
+            <DragOverlay modifiers={[restrictToVerticalAxis]} dropAnimation={null}>
+              {activeIndex >= 0 ? (
+                <PlaylistItemOverlay item={playlist[activeIndex]} isActive={activeIndex === currentPlaylistIndex} />
+              ) : null}
+            </DragOverlay>
           </DndContext>
         )}
       </Box>

@@ -198,6 +198,11 @@ private:
     static const juce::Identifier propFilePath;
     static const juce::Identifier propFileName;
     static const juce::Identifier propFileId;
+    // オーディオメタデータ（state ⇄ cache の往復で duration 等が 0 に落ちないよう永続化する）
+    static const juce::Identifier propDuration;
+    static const juce::Identifier propSampleRate;
+    static const juce::Identifier propBitDepth;
+    static const juce::Identifier propNumChannels;
 
     void initializeState();
     void notifyListeners(const std::function<void(Listener&)>& callback);

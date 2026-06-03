@@ -29,6 +29,10 @@ const juce::Identifier StateManager::propActiveFileId("activeFileId");
 const juce::Identifier StateManager::propFilePath("filePath");
 const juce::Identifier StateManager::propFileName("fileName");
 const juce::Identifier StateManager::propFileId("fileId");
+const juce::Identifier StateManager::propDuration("duration");
+const juce::Identifier StateManager::propSampleRate("sampleRate");
+const juce::Identifier StateManager::propBitDepth("bitDepth");
+const juce::Identifier StateManager::propNumChannels("numChannels");
 
 StateManager::StateManager()
     : state(treeType)
@@ -416,6 +420,12 @@ void StateManager::syncStateFromManagers()
             itemTree.setProperty(propFileId, item.id, nullptr);
             itemTree.setProperty(propFilePath, item.file.getFullPathName(), nullptr);
             itemTree.setProperty(propFileName, item.displayName, nullptr);
+            // duration 等も保存しておく。これを書かないと syncCacheFromState で
+            // 0 に読み戻され、reorder のたびに duration が消える（シークバーが死ぬ）。
+            itemTree.setProperty(propDuration, item.duration, nullptr);
+            itemTree.setProperty(propSampleRate, item.sampleRate, nullptr);
+            itemTree.setProperty(propBitDepth, item.bitDepth, nullptr);
+            itemTree.setProperty(propNumChannels, item.numChannels, nullptr);
             playlistTree.appendChild(itemTree, nullptr);
         }
         

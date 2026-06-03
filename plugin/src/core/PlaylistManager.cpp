@@ -68,7 +68,12 @@ void PlaylistManager::syncCacheFromState()
             item.sampleRate = itemTree.getProperty("sampleRate", 0.0);
             item.bitDepth = itemTree.getProperty("bitDepth", 0);
             item.numChannels = itemTree.getProperty("numChannels", 0);
-            
+
+            // state に duration が無い（旧セッション等）場合はファイルから再計算して
+            // 0:00 表示やシークバー無効を防ぐ。通常は state に保存済みなので発生しない。
+            if (item.duration <= 0.0 && item.file.existsAsFile())
+                updateItemDuration(item);
+
             itemsCache.add(item);
         }
     }
