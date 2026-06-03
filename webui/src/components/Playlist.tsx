@@ -14,7 +14,7 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 // useSortable, CSS は PlaylistItem に移動
-import { restrictToVerticalAxis, restrictToParentElement } from '@dnd-kit/modifiers';
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers';
 import { Add, Clear, Save } from '@mui/icons-material';
 import { Menu, MenuItem } from '@mui/material';
 import { Virtualizer, type VirtualizerHandle } from 'virtua';
@@ -320,7 +320,11 @@ export const Playlist: React.FC = () => {
             sensors={sensors}
             collisionDetection={closestCenter}
             onDragEnd={handleDragEnd}
-            modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+            // virtua は各行を position:absolute の 1 行分ラッパーで包む。
+            // restrictToParentElement はドラッグ対象の「親要素」（＝その 1 行分ラッパー）に
+            // 移動をクランプするため、行を全く動かせず DnD が壊れる。
+            // 仮想化リストでは縦方向固定のみで十分。
+            modifiers={[restrictToVerticalAxis]}
           >
             <SortableContext items={playlist.map((item) => item.id)} strategy={verticalListSortingStrategy}>
               {/*
