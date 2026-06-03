@@ -4,6 +4,12 @@
 #include "PluginProcessor.h"
 #include "ParameterIDs.h"
 #include "Version.h" // CMakeで自動生成されるバージョン情報ヘッダー（VERSIONファイル由来）
+
+// CMake 未構成時（IntelliSense/分岐切替直後など、生成済み Version.h が include パスに無い状態）でも
+//  コンパイル・解析が通るようフォールバックを定義する。実ビルドでは Version.h の値が優先される。
+#ifndef MIXCOMPARE_VERSION_STRING
+ #define MIXCOMPARE_VERSION_STRING "0.0.0-dev"
+#endif
 #include "core/FormatUtils.h" // 表示用フォーマット（周波数）
 #include "core/MeteringService.h"
 #include "KeyEventForwarder.h"
@@ -685,12 +691,19 @@ void MixCompare3AudioProcessorEditor::resolveResizeAck()
 
 void MixCompare3AudioProcessorEditor::applyDisplayScale()
 {
+#if JUCE_LINUX || JUCE_BSD
     // Linux でのウィンドウ物理サイズ補正。ホストの宣言スケール(Bitwig は分数スケール 150% を 200% と
     //  誤判定する)には依存せず、WebView が OS から拾う真のディスプレイ倍率 webViewDpr を基準にする。
     //  Standalone は DPI-aware な top-level 窓なので OS/コンポジタが正しく拡大する→ここで掛けると二重で巨大化。
     //  補正が要るのは「ホスト埋め込みプラグイン」だけ（KDE では Standalone も埋込も peerScale=1.0 で区別不能のため
     //  wrapperType で分岐）。埋込時: 実物理=設計CSS×T×peerScale を webViewDpr 倍にしたいので T=webViewDpr/peerScale。
     //   KDE埋込 1.5/1.0=1.5（誰も拡大しない not-dpi-aware ホスト）/ GNOME埋込 2.0/2.0=1.0（peer/Mutter が既に拡大）。
+    //
+    //  ※ この transform 補正は Linux 専用。macOS(WKWebView)/Windows(WebView2) は OS/WebView が Retina・
+    //    高DPI を native に処理するため transform 不要。macOS では getPlatformScaleFactor() が Retina でも
+    //    1.0 を返す一方 devicePixelRatio は 2.0 のため、無条件適用すると s=2.0 で窓が倍に膨らむ（VST3/CLAP の
+    //    実害）。Windows は getPlatformScaleFactor==devicePixelRatio で偶然 s=1.0 に収束するだけなので、
+    //    将来の DPI 不一致による事故も含め Linux/BSD 以外では一切走らせない。
     if (audioProcessor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
     {
         setTransform({});
@@ -707,7 +720,6 @@ void MixCompare3AudioProcessorEditor::applyDisplayScale()
     const float s = (lastWebViewDpr > 0.0) ? (float) (lastWebViewDpr / peerScale) : 1.0f;
     setTransform(juce::AffineTransform::scale(s));
 
-#if JUCE_LINUX || JUCE_BSD
     // transform を遅延/再適用すると editor の resized() が自動発火せず WebView ネイティブ子窓が取り残される
     //  （灰色余白）。settle 再同期ジグル（2-tick の 1px 揺らし）を再武装し、新 transform 下で
     //  webView.setBounds と guiRequestResize を再発火させて窓・editor・WebView子窓を収束させる。
