@@ -362,6 +362,40 @@ fi
 echo_success "CFBundleIdentifier uniquification completed"
 
 #============================================
+# Step 2.6: AU を Logic のカテゴリ（Utility）へ振り分けるためのタグ付与
+#   Logic は初回スキャン時に AU の Info.plist 内 AudioComponents[0].tags 配列を
+#   読み、その文字列でプラグインブラウザのカテゴリを決める。JUCE の AUv2 plist は
+#   この tags を一切出力しないため、未指定だとメーカー名直下にしか並ばない。
+#   ここで ["Effects", "Utility"] を付与して Utility カテゴリへ入れる。
+#   ※ 対象は AU のみ（VST3/AAX/CLAP は各々別のカテゴリ機構）。
+#   ※ コード署名は Info.plist をシールするので、必ず署名前に書き換える（Step 2.5 と同様）。
+#============================================
+echo_header "Step 2.6: Setting AU plugin tags for Logic category (Utility)"
+
+set_au_logic_tags() {
+    local bundle_path="$1"
+    shift
+    local plist="${bundle_path}/Contents/Info.plist"
+    if [[ ! -f "${plist}" ]]; then
+        echo_error "Info.plist not found: ${plist}"
+        exit 1
+    fi
+    # 既存 tags があれば一旦消す（JUCE AUv2 では通常存在しないので失敗は無視）
+    /usr/libexec/PlistBuddy -c "Delete :AudioComponents:0:tags" "${plist}" 2>/dev/null || true
+    # tags 配列を作り直して付与
+    /usr/libexec/PlistBuddy -c "Add :AudioComponents:0:tags array" "${plist}"
+    local i=0
+    for tag in "$@"; do
+        /usr/libexec/PlistBuddy -c "Add :AudioComponents:0:tags:${i} string ${tag}" "${plist}"
+        i=$((i + 1))
+    done
+    echo "  $(basename "${bundle_path}"): tags -> [$*]"
+}
+
+set_au_logic_tags "${DEST_AU}" Effects Utility
+echo_success "AU Logic tags set"
+
+#============================================
 # Step 3: コード署名（Hardened Runtime）
 #============================================
 echo_header "Step 3: Code Signing"
