@@ -54,7 +54,7 @@ Thumbs.db
 .vscode/
 .spec-workflow/
 docs/
-scripts/
+/scripts/
 juce-webview-tutorial
 .mcp.json
 AGENTS.md

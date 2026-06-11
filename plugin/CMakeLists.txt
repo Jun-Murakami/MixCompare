@@ -57,7 +57,7 @@ juce_add_plugin(MixCompare
     PLUGIN_MANUFACTURER_CODE Jmbc                  # メーカーコード（4文字）
     PLUGIN_CODE Mx03                               # プラグインコード（4文字）
     FORMATS ${MIXCOMPARE_FORMATS}                  # 対応フォーマット（AAXが有効な場合のみビルドされる）
-    LV2URI "https://junmurakami.com/plugins/mixcompare"
+    LV2URI "https://junmurakami.com/apps/mixcompare"
     PLUGIN_AU_MAIN_TYPE "aufx"                     # Audio Unit メインタイプ（エフェクト）
     VST3_CATEGORIES "Analyzer"                     # VST3カテゴリ
     AAX_CATEGORY "AAX_ePlugInCategory_SWGenerators|AAX_ePlugInCategory_SoundField"  # AAXカテゴリ（インストゥルメント扱い）
