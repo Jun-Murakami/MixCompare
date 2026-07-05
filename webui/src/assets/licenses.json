@@ -679,7 +679,7 @@
     "path": "/work/webui/node_modules/virtua",
     "licenseFile": "/work/webui/node_modules/virtua/LICENSE"
   },
-  "webui@3.0.7": {
+  "webui@3.0.9": {
     "licenses": "UNLICENSED",
     "private": true,
     "path": "/work/webui",
