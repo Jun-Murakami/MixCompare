@@ -13,6 +13,7 @@
 #include "core/MeteringService.h"
 #include "core/ErrorManager.h"
 #include "util/CrashHandler.h"
+#include "util/DiagnosticLog.h"
 #include "audio/StreamingPlaybackSource.h"
 #include "audio/InMemoryPlaybackSource.h"
 #include "audio/MonkeyAudioFormat.h"
@@ -30,6 +31,9 @@ MixCompare3AudioProcessor::MixCompare3AudioProcessor()
           .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       parameters(*this, nullptr, "PARAMETERS", createParameterLayout())
 {
+    // 診断ログはエディタ生成（=WebView 起動）より前に開設する。
+    // WebView 子プロセスのログ捕捉用環境変数の設定もここで行われる。
+    mc3::DiagnosticLog::install();
     mc3::CrashHandler::install();
     // パラメータ変更を監視
     parameters.addParameterListener(mc3::id::HOST_GAIN.getParamID(), this);

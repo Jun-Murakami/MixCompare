@@ -27,6 +27,10 @@
 #      フォールバック。upstream JUCE はバージョン無しの libfoo.so しか試さず、それは
 #      -devel/-dev パッケージにしか入っていない（Fedora/Debian のパッケージ方針）。
 #      そのため開発機でしか WebView が動かず、一般ユーザー環境では UI 真っ白になる。
+#   4) juce-webview-linux-childlog.patch: 環境変数 JUCE_WEBVIEW_CHILD_LOG にパスが
+#      あれば WebView 子プロセスの stdout/stderr をそのファイルへ dup2 する
+#      （プラグイン側の DiagnosticLog が設定）。dlopen 失敗も stderr へ出力する。
+#      注意: soname パッチが追加した行を文脈に含むため、この順序でのみ適用可能。
 #
 # 単一ソース: 親 ../patches にマスターがあれば、まずローカル patches/ へ上書き同期。
 # 使い方: add_subdirectory(JUCE) の「前」で include すること。
@@ -37,7 +41,8 @@ set(JUCE_DIR          "${CMAKE_CURRENT_SOURCE_DIR}/${JUCE_DIR_NAME}")
 set(JUCE_PATCH_NAMES
     "juce-webview-linux-utf8.patch"
     "juce-webview-linux-ldpath.patch"
-    "juce-webview-linux-soname.patch")
+    "juce-webview-linux-soname.patch"
+    "juce-webview-linux-childlog.patch")
 
 # 1) 大元(親 ../patches)があればローカル patches/ へ上書き同期（host のみ。container では ../patches
 #    が無いので skip、ローカル patches/ はリポジトリと一緒にマウントされている）。

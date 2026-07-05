@@ -195,6 +195,14 @@ private:
     // OSネイティブダイアログ（NSOpenPanel等）表示中のカウンタ
     std::atomic<int> activeModalDialogs{ 0 };
 
+    // --- WebView 起動診断（DiagnosticLog 連携） ---
+    // WebView から最初のリソース要求が来たか（= WebView 子プロセスが起動できた証拠）。
+    // getResource() が const のため mutable。
+    mutable std::atomic<bool> webViewFirstResourceServed{ false };
+    // ウォッチドッグ発動時に WebView の代わりに表示する案内（ログの場所と対処方法）
+    std::unique_ptr<juce::Label> webViewFailureNotice;
+    void showWebViewStartupFailureNotice();
+
 #if defined(JUCE_WINDOWS)
     // ウィンドウ固有DPI監視（グローバルDPIではなく HWND 基準）
     double lastHwndScaleFactor { 0.0 };     // GetDpiForWindow→スケール換算

@@ -110,6 +110,8 @@ target_sources(MixCompare PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/MeteringService.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/util/CrashHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/util/CrashHandler.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/util/DiagnosticLog.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/util/DiagnosticLog.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/NullPlaybackSource.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/StreamingPlaybackSource.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/StreamingPlaybackSource.cpp

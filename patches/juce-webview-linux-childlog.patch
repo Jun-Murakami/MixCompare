@@ -1,0 +1,32 @@
+diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
+--- a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
++++ b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
+@@ -1722,6 +1722,28 @@
+             close (inPipe[0]);
+             close (outPipe[1]);
+ 
++            // MixCompare patch: capture the webview child's stdout/stderr into a log file so
++            // end-user failures (dlopen errors, missing WebKitGTK, sandbox problems) become
++            // visible — DAWs swallow the child's stderr. The plugin sets JUCE_WEBVIEW_CHILD_LOG
++            // before the webview is created. open/dup2/write are async-signal-safe; no O_CLOEXEC
++            // so the descriptors survive the execve below.
++            if (const char* childLogPath = getenv ("JUCE_WEBVIEW_CHILD_LOG"))
++            {
++                const int logFd = open (childLogPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
++
++                if (logFd >= 0)
++                {
++                    dup2 (logFd, STDOUT_FILENO);
++                    dup2 (logFd, STDERR_FILENO);
++
++                    if (logFd > STDERR_FILENO)
++                        close (logFd);
++
++                    const char banner[] = "[juce-webview-child] forked, about to exec\n";
++                    [[maybe_unused]] auto ignored = write (STDERR_FILENO, banner, sizeof (banner) - 1);
++                }
++            }
++
+             if (JUCEApplicationBase::isStandaloneApp())
+             {
+                 execve (arguments[0].toRawUTF8(), (char**) argv.data(), childEnv.data());

@@ -1,7 +1,19 @@
 diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
 --- a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
 +++ b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
-@@ -451,18 +451,39 @@
+@@ -448,21 +448,59 @@
+         for (auto* l : { &webkitLib, &jsLib, &soupLib })
+             *l = {};
+ 
++        // MixCompare patch: surface the failure (goes to the child log when stderr is
++        // redirected by JUCE_WEBVIEW_CHILD_LOG, or the terminal when running standalone)
++        if (const char* err = dlerror())
++            std::fprintf (stderr, "[juce-webview] dlopen failed for {%s, %s, %s}: %s\n",
++                          names.webkitLib, names.jsLib, names.soupLib, err);
++        else
++            std::fprintf (stderr, "[juce-webview] dlopen failed for {%s, %s, %s}\n",
++                          names.webkitLib, names.jsLib, names.soupLib);
++
          return false;
      }
  
@@ -16,6 +28,14 @@ diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/
 +        for (auto* name : names)
 +            if (auto handle = DylibHandle (name))
 +                return handle;
++
++        // MixCompare patch: surface the failure (see openWebKitAndDependencyLibraries)
++        std::fprintf (stderr, "[juce-webview] dlopen failed for all of:");
++
++        for (auto* name : names)
++            std::fprintf (stderr, " %s", name);
++
++        std::fprintf (stderr, " (%s)\n", [] { const char* e = dlerror(); return e != nullptr ? e : "no dlerror"; }());
 +
 +        return {};
 +    }

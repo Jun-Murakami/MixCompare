@@ -3,6 +3,7 @@
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 #include "ParameterIDs.h"
+#include "util/DiagnosticLog.h"
 #include "Version.h" // CMakeで自動生成されるバージョン情報ヘッダー（VERSIONファイル由来）
 
 // CMake 未構成時（IntelliSense/分岐切替直後など、生成済み Version.h が include パスに無い状態）でも
@@ -415,10 +416,35 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
 #if !MIXCOMPARE_DEV_MODE
         webView.goToURL(juce::WebBrowserComponent::getResourceProviderRoot());
 #else
-        
+
         jassertfalse;
 #endif
     }
+
+    mc3::DiagnosticLog::log("editor: created, webview URL set");
+
+#if !MIXCOMPARE_DEV_MODE
+    // ウォッチドッグ: 一定時間内に WebView からリソース要求が一度も来なければ、
+    // WebView（子プロセス）が起動できていない。ログへ記録し、真っ白のまま放置せず
+    // ログの場所を画面に案内する。
+    juce::Timer::callAfterDelay(7000, [safe = juce::Component::SafePointer(this)]
+    {
+        mc3::DiagnosticLog::log("watchdog: timer fired (editor="
+                                + juce::String(safe != nullptr ? "alive" : "gone") + ")");
+
+        if (safe == nullptr || safe->isShuttingDown.load())
+            return;
+
+        if (!safe->webViewFirstResourceServed.load())
+        {
+            mc3::DiagnosticLog::log(
+                "WATCHDOG: no webview resource request within 7s — the webview (child process) "
+                "most likely failed to start. Check the webview child log and the dlopen probe "
+                "results above.");
+            safe->showWebViewStartupFailureNotice();
+        }
+    });
+#endif
     
     // ウィンドウサイズ設定。設計初期サイズは 392×650（AAX のみ横 450）。
     const bool isAAX = juce::PluginHostType().isProTools()
@@ -504,6 +530,8 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
 
 MixCompare3AudioProcessorEditor::~MixCompare3AudioProcessorEditor()
 {
+    mc3::DiagnosticLog::log("editor: destroyed");
+
     // シャットダウンフラグを最初に立てる
     isShuttingDown.store(true);
 
@@ -651,6 +679,9 @@ void MixCompare3AudioProcessorEditor::resized()
     // WebViewをウィンドウ全域に配置（余白なし）
     const int gripperSize = 24;
     webView.setBounds(getLocalBounds());
+
+    if (webViewFailureNotice != nullptr)
+        webViewFailureNotice->setBounds(getLocalBounds());
 
     // リサイズグリッパーの位置を更新（最前面に）
     if (resizer)
@@ -1226,7 +1257,11 @@ void MixCompare3AudioProcessorEditor::sendTrackChangeUpdate()
 std::optional<MixCompare3AudioProcessorEditor::Resource> 
 MixCompare3AudioProcessorEditor::getResource(const juce::String& url) const
 {
-    const auto resourceToRetrieve = 
+    // 最初のリソース要求 = WebView 子プロセスが起動しコンテンツを要求してきた証拠
+    if (!webViewFirstResourceServed.exchange(true))
+        mc3::DiagnosticLog::log("webview: first resource request received (" + url + ")");
+
+    const auto resourceToRetrieve =
         url == "/" ? "index.html" : url.fromFirstOccurrenceOf("/", false, false);
     
     
@@ -1556,6 +1591,8 @@ void MixCompare3AudioProcessorEditor::handleSystemAction(
 
     if (action == "ready")
     {
+        mc3::DiagnosticLog::log("webview: frontend 'ready' received — UI is alive");
+
         // 初期パラメータ送信は一度だけ
         if (!initialParamsSent.exchange(true))
         {
@@ -1782,6 +1819,40 @@ void MixCompare3AudioProcessorEditor::sendErrorNotification(const MixCompare::Er
     
     
     webView.emitEventIfBrowserIsVisible("errorNotification", errorData.get());
+}
+
+void MixCompare3AudioProcessorEditor::showWebViewStartupFailureNotice()
+{
+    if (webViewFailureNotice != nullptr)
+        return;
+
+    juce::String text;
+    text << "MixCompare " << MIXCOMPARE_VERSION_STRING << "\n\n"
+         << juce::String(juce::CharPointer_UTF8("プラグインUI (WebView) を起動できませんでした。\n"))
+         << "The plugin UI (WebView) failed to start.\n\n"
+         << juce::String(juce::CharPointer_UTF8("診断ログ / Diagnostic logs:\n"))
+         << mc3::DiagnosticLog::getLogDirectory().getFullPathName() << "\n\n";
+
+   #if JUCE_LINUX
+    text << juce::String(juce::CharPointer_UTF8("Linux では WebKitGTK 4.1 が必要です / WebKitGTK 4.1 is required:\n"))
+         << "  Fedora:        sudo dnf install webkit2gtk4.1\n"
+         << "  Ubuntu/Debian: sudo apt install libwebkit2gtk-4.1-0\n\n";
+   #endif
+
+    text << juce::String(juce::CharPointer_UTF8("上記フォルダのログを添えてサポートまでご連絡ください。\n"))
+         << "Please contact support with the log files from the folder above.";
+
+    webViewFailureNotice = std::make_unique<juce::Label>();
+    webViewFailureNotice->setJustificationType(juce::Justification::centred);
+    webViewFailureNotice->setColour(juce::Label::backgroundColourId, juce::Colour(0xFF37474F));
+    webViewFailureNotice->setColour(juce::Label::textColourId, juce::Colours::white);
+    webViewFailureNotice->setFont(juce::FontOptions(15.0f));
+    webViewFailureNotice->setMinimumHorizontalScale(0.7f);
+    webViewFailureNotice->setText(text, juce::dontSendNotification);
+
+    addAndMakeVisible(*webViewFailureNotice);
+    webViewFailureNotice->setBounds(getLocalBounds());
+    webViewFailureNotice->toFront(false);
 }
 
 // getMimeForExtension関数は既に名前空間内で定義されているため削除
