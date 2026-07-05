@@ -23,6 +23,10 @@
 #      Ardour .run 等の自己完結バンドルが LD_LIBRARY_PATH を古い glib に向けるため、
 #      子プロセスの WebKitGTK が undefined symbol で即死→UI真っ白。execve に
 #      LD_LIBRARY_PATH を除いた環境を渡して system ライブラリでロードさせ解消。
+#   3) juce-webview-linux-soname.patch: dlopen をバージョン付き SONAME (.so.0 等) に
+#      フォールバック。upstream JUCE はバージョン無しの libfoo.so しか試さず、それは
+#      -devel/-dev パッケージにしか入っていない（Fedora/Debian のパッケージ方針）。
+#      そのため開発機でしか WebView が動かず、一般ユーザー環境では UI 真っ白になる。
 #
 # 単一ソース: 親 ../patches にマスターがあれば、まずローカル patches/ へ上書き同期。
 # 使い方: add_subdirectory(JUCE) の「前」で include すること。
@@ -32,7 +36,8 @@ set(JUCE_DIR_NAME     "JUCE")
 set(JUCE_DIR          "${CMAKE_CURRENT_SOURCE_DIR}/${JUCE_DIR_NAME}")
 set(JUCE_PATCH_NAMES
     "juce-webview-linux-utf8.patch"
-    "juce-webview-linux-ldpath.patch")
+    "juce-webview-linux-ldpath.patch"
+    "juce-webview-linux-soname.patch")
 
 # 1) 大元(親 ../patches)があればローカル patches/ へ上書き同期（host のみ。container では ../patches
 #    が無いので skip、ローカル patches/ はリポジトリと一緒にマウントされている）。
