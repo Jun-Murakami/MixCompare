@@ -1,7 +1,7 @@
 diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
 --- a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
 +++ b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
-@@ -1722,6 +1722,28 @@
+@@ -1722,6 +1722,41 @@
              close (inPipe[0]);
              close (outPipe[1]);
  
@@ -24,9 +24,47 @@ diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/
 +
 +                    const char banner[] = "[juce-webview-child] forked, about to exec\n";
 +                    [[maybe_unused]] auto ignored = write (STDERR_FILENO, banner, sizeof (banner) - 1);
++
++                    // diag: dump the display-related entries of the exec environment so a
++                    // "cannot open display" in the child can be attributed (missing vs stale)
++                    for (char* const* e = childEnv.data(); *e != nullptr; ++e)
++                    {
++                        if (strstr (*e, "DISPLAY") != nullptr || strstr (*e, "XAUTHORITY") != nullptr
++                            || strstr (*e, "XDG_SESSION_TYPE") != nullptr || strstr (*e, "TMPDIR") != nullptr)
++                        {
++                            ignored = write (STDERR_FILENO, "[juce-webview-child] env: ", 26);
++                            ignored = write (STDERR_FILENO, *e, strlen (*e));
++                            ignored = write (STDERR_FILENO, "\n", 1);
++                        }
++                    }
 +                }
 +            }
 +
              if (JUCEApplicationBase::isStandaloneApp())
              {
                  execve (arguments[0].toRawUTF8(), (char**) argv.data(), childEnv.data());
+@@ -1740,6 +1775,24 @@
+                #endif
+             }
+ 
++            // MixCompare patch: reaching this line means execve FAILED (it never returns on
++            // success). Upstream silently exit(0)s here, hiding e.g. a noexec $TMPDIR. Report
++            // the target and errno to the (possibly redirected) stderr. write/_exit are
++            // async-signal-safe; the strerror-free errno formatting keeps it that way.
++            {
++                const char failMsg[] = "[juce-webview-child] execve FAILED: ";
++                [[maybe_unused]] auto ignored = write (STDERR_FILENO, failMsg, sizeof (failMsg) - 1);
++                ignored = write (STDERR_FILENO, argv[0], strlen (argv[0]));
++
++                char errnoText[] = " (errno 000)\n";
++                const int savedErrno = errno;
++                errnoText[8]  = (char) ('0' + (savedErrno / 100) % 10);
++                errnoText[9]  = (char) ('0' + (savedErrno / 10)  % 10);
++                errnoText[10] = (char) ('0' +  savedErrno        % 10);
++                ignored = write (STDERR_FILENO, errnoText, sizeof (errnoText) - 1);
++                _exit (127);
++            }
++
+             exit (0);
+         }
+ 
