@@ -177,9 +177,19 @@ void DiagnosticLog::install()
 
         // WebView 子プロセスの stdout/stderr をファイルへ捕捉する
         // （JUCE 側は juce-webview-linux-childlog.patch がこの環境変数を参照する）。
+        // ファイルはここで必ず「事前作成」する: ユーザー報告時に
+        //   - ファイル自体が無い     → このコード（プラグイン側）が動いていない
+        //   - ヘッダ行しか無い       → JUCE 側が一度も書いていない
+        //     （= childlog パッチ欠落ビルド、または fork 前に失敗）
+        //   - banner 以降の行がある  → 子プロセスの死因がそこに書かれている
+        // を一目で区別できるようにするため。
         auto childLog = getWebViewChildLogFile();
         if (childLog.getSize() > 128 * 1024)
             childLog.deleteFile();
+        childLog.appendText("[plugin] child log opened by DiagnosticLog ("
+                            + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H:%M:%S")
+                            + ", MixCompare " MIXCOMPARE_VERSION_STRING
+                            + ") — lines below this one are written by the webview child process\n");
         ::setenv("JUCE_WEBVIEW_CHILD_LOG", childLog.getFullPathName().toRawUTF8(), 1);
         log("webview child log: " + childLog.getFullPathName());
 

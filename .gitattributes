@@ -9,6 +9,12 @@
 JUCE/**                   -text
 clap-juce-extensions/**   -text
 
+# パッチファイルはバイト保全（-text）。JUCE のソースは CRLF なので、パッチの
+# コンテキスト行も CRLF を含む。text=auto eol=lf の正規化で LF 化されると
+# git apply がコンテキスト不一致で失敗し、ApplyJucePatch が「パッチ無し」の
+# バイナリを黙って出荷する事故になる（v3.0.9-beta で childlog パッチ欠落が発生）。
+patches/*.patch           -text
+
 # バイナリは変換しない（現在追跡中の実バイナリは画像・アイコンのみ）
 *.png   binary
 *.ico   binary

@@ -56,33 +56,40 @@ foreach(_patch IN LISTS JUCE_PATCH_NAMES)
 endforeach()
 
 # 2) 外側リポジトリの git で submodule 配下へ apply（冪等: reverse-check で適用済みを skip）
+#    重要: 適用失敗・パッチ欠落は FATAL_ERROR でビルドを止める。以前は WARNING で続行して
+#    いたため「パッチ無しのバイナリが黙って出荷される」事故が起きた（v3.0.9-beta:
+#    .gitattributes の LF 正規化でパッチが壊れ、childlog パッチ欠落のまま配布）。
+#    失敗時はまずパッチファイルの改行を確認: `file patches/*.patch` が CRLF を含むこと
+#    （LF のみなら .gitattributes の `patches/*.patch -text` が効いていない状態で
+#    checkout された劣化コピー。git で正しいバイトを取り直すこと）。
 if(IS_DIRECTORY "${JUCE_DIR}")
     find_package(Git QUIET)
-    if(Git_FOUND)
-        foreach(_patch IN LISTS JUCE_PATCH_NAMES)
-            set(_local "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}")
-            if(EXISTS "${_local}")
-                # 適用済みか？（逆パッチが綺麗に当たれば適用済み）
-                execute_process(
-                    COMMAND "${GIT_EXECUTABLE}" apply --directory=${JUCE_DIR_NAME} -p1 --reverse --check "${_local}"
-                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-                    RESULT_VARIABLE _rev ERROR_QUIET OUTPUT_QUIET)
-                if(_rev EQUAL 0)
-                    message(STATUS "juce patch: already applied ${_patch}")
-                else()
-                    execute_process(
-                        COMMAND "${GIT_EXECUTABLE}" apply --directory=${JUCE_DIR_NAME} -p1 "${_local}"
-                        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-                        RESULT_VARIABLE _app ERROR_VARIABLE _err)
-                    if(_app EQUAL 0)
-                        message(STATUS "juce patch: applied ${_patch}")
-                    else()
-                        message(WARNING "juce patch: FAILED to apply ${_patch}\n${_err}")
-                    endif()
-                endif()
-            endif()
-        endforeach()
-    else()
-        message(WARNING "juce patch: Git not found; skipped (要手動 git apply)")
+    if(NOT Git_FOUND)
+        message(FATAL_ERROR "juce patch: Git not found — patches cannot be applied")
     endif()
+    foreach(_patch IN LISTS JUCE_PATCH_NAMES)
+        set(_local "${CMAKE_CURRENT_SOURCE_DIR}/patches/${_patch}")
+        if(NOT EXISTS "${_local}")
+            message(FATAL_ERROR "juce patch: MISSING patch file ${_patch}")
+        endif()
+        # 適用済みか？（逆パッチが綺麗に当たれば適用済み）
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" apply --directory=${JUCE_DIR_NAME} -p1 --reverse --check "${_local}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            RESULT_VARIABLE _rev ERROR_QUIET OUTPUT_QUIET)
+        if(_rev EQUAL 0)
+            message(STATUS "juce patch: already applied ${_patch}")
+        else()
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" apply --directory=${JUCE_DIR_NAME} -p1 "${_local}"
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                RESULT_VARIABLE _app ERROR_VARIABLE _err)
+            if(_app EQUAL 0)
+                message(STATUS "juce patch: applied ${_patch}")
+            else()
+                message(FATAL_ERROR "juce patch: FAILED to apply ${_patch} — refusing to build "
+                                    "without it (check patch line endings / JUCE tree state)\n${_err}")
+            endif()
+        endif()
+    endforeach()
 endif()
