@@ -9,11 +9,17 @@
 JUCE/**                   -text
 clap-juce-extensions/**   -text
 
-# パッチファイルはバイト保全（-text）。JUCE のソースは CRLF なので、パッチの
-# コンテキスト行も CRLF を含む。text=auto eol=lf の正規化で LF 化されると
-# git apply がコンテキスト不一致で失敗し、ApplyJucePatch が「パッチ無し」の
-# バイナリを黙って出荷する事故になる（v3.0.9-beta で childlog パッチ欠落が発生）。
-patches/*.patch           -text
+# パッチは常に CRLF でチェックアウトする（text eol=crlf）。JUCE のソースは CRLF
+# なのでパッチのコンテキスト行も CRLF でなければ git apply がコンテキスト不一致で
+# 失敗し、ApplyJucePatch が「パッチ無し」バイナリを黙って出荷する事故になる
+# （v3.0.9-beta で childlog 欠落が発生）。
+#   なぜ -text ではなく text eol=crlf か:
+#   -text は「バイトそのまま保全」なので、どこかのマシンで LF 保存・LF コミット
+#   されると LF のまま劣化し、CRLF の JUCE ツリーに当たらなくなる（実際に utf8/
+#   ldpath/soname が LF 劣化して configure が FATAL した）。text eol=crlf なら
+#   リポジトリ内は LF 正規化・チェックアウト時に必ず CRLF 実体化されるため、
+#   コミットしたマシンの改行設定に依存せず常に CRLF が得られる。
+patches/*.patch           text eol=crlf
 
 # バイナリは変換しない（現在追跡中の実バイナリは画像・アイコンのみ）
 *.png   binary
