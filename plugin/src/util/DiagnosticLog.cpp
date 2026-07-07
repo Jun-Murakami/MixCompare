@@ -16,6 +16,7 @@
 #if JUCE_LINUX
  #include <dlfcn.h>
  #include <csignal>
+ #include <sys/statvfs.h>
 #endif
 
 namespace mc3
@@ -142,6 +143,54 @@ void logLinuxEnvironment()
 
     logDlopenProbes();
 }
+
+// dir のファイルシステムが noexec マウントかどうか（判定不能時は false = exec 可扱い）
+bool isMountedNoexec(const juce::File& dir)
+{
+    struct statvfs vfs {};
+
+    if (::statvfs(dir.getFullPathName().toRawUTF8(), &vfs) != 0)
+        return false;
+
+    return (vfs.f_flag & ST_NOEXEC) != 0;
+}
+
+// プラグイン形態の WebView 子プロセスは、一時ディレクトリに書き出したヘルパー
+// バイナリ（_juce_linux_subprocess）を exec する。/tmp が noexec マウントの
+// 強化環境では exec が EACCES で失敗し UI が出ないため、exec 可能なディレクトリを
+// 選んで JUCE_WEBVIEW_HELPER_DIR で JUCE 側（childlog パッチ）へ指示する。
+void chooseWebViewHelperDir()
+{
+    const auto tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory);
+
+    if (!isMountedNoexec(tempDir))
+    {
+        DiagnosticLog::log("helper dir: " + tempDir.getFullPathName() + " (exec ok)");
+        return; // 既定のままで問題なし
+    }
+
+    DiagnosticLog::log("helper dir: " + tempDir.getFullPathName()
+                       + " is mounted NOEXEC — relocating the webview helper");
+
+    juce::Array<juce::File> candidates;
+
+    if (const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR"))
+        candidates.add(juce::File(juce::String::fromUTF8(runtimeDir)));
+
+    candidates.add(juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(".cache"));
+
+    for (const auto& dir : candidates)
+    {
+        if (dir.isDirectory() && !isMountedNoexec(dir))
+        {
+            ::setenv("JUCE_WEBVIEW_HELPER_DIR", dir.getFullPathName().toRawUTF8(), 1);
+            DiagnosticLog::log("helper dir: relocated to " + dir.getFullPathName());
+            return;
+        }
+    }
+
+    DiagnosticLog::log("helper dir: WARNING — no exec-capable directory found; webview will likely fail");
+}
 #endif // JUCE_LINUX
 
 } // namespace
@@ -201,6 +250,17 @@ void DiagnosticLog::install()
             ::setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
             log("mitigation: WEBKIT_DISABLE_DMABUF_RENDERER=1 (beta default)");
         }
+
+        // 同様に、GPU コンポジット経路で真っ白になる環境向けに合成モードも無効化する
+        // （CI/コンテナのテスト環境と同一条件。描画は僅かに遅くなるが確実性優先）。
+        if (std::getenv("WEBKIT_DISABLE_COMPOSITING_MODE") == nullptr)
+        {
+            ::setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 0);
+            log("mitigation: WEBKIT_DISABLE_COMPOSITING_MODE=1 (beta default)");
+        }
+
+        // /tmp が noexec の強化環境向け: ヘルパーの配置先を選定
+        chooseWebViewHelperDir();
 #endif
     });
 }

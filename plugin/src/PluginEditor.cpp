@@ -425,9 +425,11 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
 
 #if !MIXCOMPARE_DEV_MODE
     // ウォッチドッグ: 一定時間内に WebView からリソース要求が一度も来なければ、
-    // WebView（子プロセス）が起動できていない。ログへ記録し、真っ白のまま放置せず
-    // ログの場所を画面に案内する。
-    juce::Timer::callAfterDelay(7000, [safe = juce::Component::SafePointer(this)]
+    // WebView（子プロセス）が起動できていない可能性が高い。ログへ記録し、真っ白のまま
+    // 放置せずログの場所を画面に案内する。WebKit のコールドスタートは遅い環境で
+    // 10 秒近くかかることがある（開発機でも実測 8 秒）ため、遅れてリソース要求が
+    // 届いた場合は getResource() 側が案内を自動で取り下げる。
+    juce::Timer::callAfterDelay(10000, [safe = juce::Component::SafePointer(this)]
     {
         mc3::DiagnosticLog::log("watchdog: timer fired (editor="
                                 + juce::String(safe != nullptr ? "alive" : "gone") + ")");
@@ -438,7 +440,7 @@ MixCompare3AudioProcessorEditor::MixCompare3AudioProcessorEditor(MixCompare3Audi
         if (!safe->webViewFirstResourceServed.load())
         {
             mc3::DiagnosticLog::log(
-                "WATCHDOG: no webview resource request within 7s — the webview (child process) "
+                "WATCHDOG: no webview resource request within 10s — the webview (child process) "
                 "most likely failed to start. Check the webview child log and the dlopen probe "
                 "results above.");
             safe->showWebViewStartupFailureNotice();
@@ -1259,7 +1261,23 @@ MixCompare3AudioProcessorEditor::getResource(const juce::String& url) const
 {
     // 最初のリソース要求 = WebView 子プロセスが起動しコンテンツを要求してきた証拠
     if (!webViewFirstResourceServed.exchange(true))
+    {
         mc3::DiagnosticLog::log("webview: first resource request received (" + url + ")");
+
+        // ウォッチドッグ発動後に届いた場合（= 単に起動が遅かった）、失敗案内を自動で消す。
+        // 通知 Label は WebView を覆っているため、放置すると「動いているのに失敗に見える」。
+        juce::MessageManager::callAsync(
+            [safe = juce::Component::SafePointer(const_cast<MixCompare3AudioProcessorEditor*>(this))]
+            {
+                if (safe != nullptr && safe->webViewFailureNotice != nullptr)
+                {
+                    mc3::DiagnosticLog::log(
+                        "webview: resources arrived AFTER the watchdog — startup was just slow; "
+                        "dismissing the failure notice");
+                    safe->webViewFailureNotice.reset();
+                }
+            });
+    }
 
     const auto resourceToRetrieve =
         url == "/" ? "index.html" : url.fromFirstOccurrenceOf("/", false, false);
@@ -1839,7 +1857,9 @@ void MixCompare3AudioProcessorEditor::showWebViewStartupFailureNotice()
          << "  Ubuntu/Debian: sudo apt install libwebkit2gtk-4.1-0\n\n";
    #endif
 
-    text << juce::String(juce::CharPointer_UTF8("上記フォルダのログを添えてサポートまでご連絡ください。\n"))
+    text << juce::String(juce::CharPointer_UTF8("読み込みが遅いだけの場合、この表示は自動的に消えます。\n"))
+         << "If loading is just slow, this notice will disappear automatically.\n\n"
+         << juce::String(juce::CharPointer_UTF8("上記フォルダのログを添えてサポートまでご連絡ください。\n"))
          << "Please contact support with the log files from the folder above.";
 
     webViewFailureNotice = std::make_unique<juce::Label>();

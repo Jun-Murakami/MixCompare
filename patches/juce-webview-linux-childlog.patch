@@ -1,7 +1,22 @@
 diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
 --- a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
 +++ b/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp
-@@ -1722,6 +1722,41 @@
+@@ -1666,7 +1666,13 @@
+        #if JUCE_USE_EXTERNAL_TEMPORARY_SUBPROCESS
+         if (! JUCEApplicationBase::isStandaloneApp())
+         {
+-            subprocessFile.emplace ("_juce_linux_subprocess");
++            // MixCompare patch: the helper is exec'd from the temp directory, which fails on
++            // hardened systems where /tmp is mounted noexec. JUCE_WEBVIEW_HELPER_DIR (set by
++            // the plugin after a statvfs ST_NOEXEC check) relocates it to an exec-capable dir.
++            if (const char* helperDir = getenv ("JUCE_WEBVIEW_HELPER_DIR"))
++                subprocessFile.emplace (File (String::fromUTF8 (helperDir)).getChildFile ("_juce_linux_subprocess"));
++            else
++                subprocessFile.emplace ("_juce_linux_subprocess");
+ 
+             const auto externalSubprocessAvailable = subprocessFile->getFile().replaceWithData (LinuxSubprocessHelperBinaryData::juce_linux_subprocess_helper,
+                                                                                                 LinuxSubprocessHelperBinaryData::juce_linux_subprocess_helperSize)
+@@ -1730,6 +1736,41 @@
              close (inPipe[0]);
              close (outPipe[1]);
  
@@ -43,7 +58,7 @@ diff --git a/modules/juce_gui_extra/native/juce_WebBrowserComponent_linux.cpp b/
              if (JUCEApplicationBase::isStandaloneApp())
              {
                  execve (arguments[0].toRawUTF8(), (char**) argv.data(), childEnv.data());
-@@ -1740,6 +1775,24 @@
+@@ -1748,6 +1789,24 @@
                 #endif
              }
  
