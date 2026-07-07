@@ -58,7 +58,6 @@ docs/
 juce-webview-tutorial
 .mcp.json
 AGENTS.md
-Claude.md
 
 # Temporary files
 *.tmp
