@@ -1,0 +1,38 @@
+
+**********************************************************
+
+Log started: 5 Jul 2026 3:43:30pm
+
+2026-07-05 15:43:30 ==== session start ====
+2026-07-05 15:43:30 plugin: MixCompare 3.0.9-beta (JUCE JUCE v8.0.13)
+2026-07-05 15:43:30 host: Unknown | process: /mnt/Data/Tech_Stuff/Linux_Stuff/PROGRAMS/Other Programs/REAPER (prop)/reaper_linux_x86_64/REAPER/reaper
+2026-07-05 15:43:30 os: Linux
+2026-07-05 15:43:30 mitigation: SIGPIPE ignored (dead webview child pipe must not kill the process)
+2026-07-05 15:43:30 distro: Fedora Linux 44 (Workstation Edition)
+2026-07-05 15:43:30 sandbox: flatpak=no snap=no
+2026-07-05 15:43:30 env: XDG_SESSION_TYPE=wayland
+2026-07-05 15:43:30 env: XDG_CURRENT_DESKTOP=GNOME
+2026-07-05 15:43:30 env: GDK_BACKEND=(unset)
+2026-07-05 15:43:30 env: DISPLAY=:0
+2026-07-05 15:43:30 env: WAYLAND_DISPLAY=wayland-0
+2026-07-05 15:43:30 env: LD_LIBRARY_PATH=(unset)
+2026-07-05 15:43:30 env: LD_PRELOAD=(unset)
+2026-07-05 15:43:30 env: WEBKIT_DISABLE_DMABUF_RENDERER=(unset)
+2026-07-05 15:43:30 env: WEBKIT_DISABLE_COMPOSITING_MODE=(unset)
+2026-07-05 15:43:30 dlopen FAIL  libwebkit2gtk-4.1.so  (libwebkit2gtk-4.1.so: cannot open shared object file: No such file or directory)
+2026-07-05 15:43:30 dlopen OK    libwebkit2gtk-4.1.so.0
+2026-07-05 15:43:30 dlopen FAIL  libjavascriptcoregtk-4.1.so  (libjavascriptcoregtk-4.1.so: cannot open shared object file: No such file or directory)
+2026-07-05 15:43:30 dlopen OK    libjavascriptcoregtk-4.1.so.0
+2026-07-05 15:43:30 dlopen FAIL  libsoup-3.0.so  (libsoup-3.0.so: cannot open shared object file: No such file or directory)
+2026-07-05 15:43:30 dlopen OK    libsoup-3.0.so.0
+2026-07-05 15:43:30 dlopen SKIP  libwebkit2gtk-4.0/libsoup-2.4 (4.1 stack present; probing both soup generations in one process would abort)
+2026-07-05 15:43:30 dlopen FAIL  libgtk-3.so  (libgtk-3.so: cannot open shared object file: No such file or directory)
+2026-07-05 15:43:30 dlopen OK    libgtk-3.so.0
+2026-07-05 15:43:30 dlopen OK    libglib-2.0.so
+2026-07-05 15:43:30 dlopen OK    libglib-2.0.so.0
+2026-07-05 15:43:30 info: /usr/lib64/libwebkitgtk-6.0.so.4 exists (GTK4 WebKit — not usable by this plugin)
+2026-07-05 15:43:30 webview child log: /home/yannik/.config/MixCompare/Logs/MixCompare-webview-child.log
+2026-07-05 15:43:30 mitigation: WEBKIT_DISABLE_DMABUF_RENDERER=1 (beta default)
+2026-07-05 15:43:30 editor: created, webview URL set
+2026-07-05 15:43:37 watchdog: timer fired (editor=alive)
+2026-07-05 15:43:37 WATCHDOG: no webview resource request within 7s â the webview (child process) most likely failed to start. Check the webview child log and the dlopen probe results above.
